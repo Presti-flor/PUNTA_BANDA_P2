@@ -1,460 +1,249 @@
-// server.js (COMPLETO, AJUSTADO A TUS COLUMNAS)
-// TABLAS:
-// - variedades: id (ej: V01), nombre, activo
-// - scans: id, ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre
-//
-// NUEVOS CÓDIGOS:
-// - Bonchador (A):  B16 ... B25
-// - Var/Grado/Tallos (B):  V01-60-25  => variedad_id=V01, grado_cm=60, tallos=25
-//
-// ORDEN LIBRE:
-// - Puedes escanear A→B o B→A.
-// - Si llega B primero SIN worker en body, se guarda en un “pendiente global” (limitación: si dos personas hacen B-primero al tiempo, puede cruzarse).
-
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
+const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
+app.use(cors());
 app.use(express.json());
-app.use(cors({ origin: "*", methods: ["GET", "POST"], allowedHeaders: ["Content-Type"] }));
 
-const DB_URL = process.env.DATABASE_URL || "";
-const isRailwayLike =
-  DB_URL.includes("proxy.rlwy.net") ||
-  DB_URL.includes("railway") ||
-  DB_URL.includes("rlwy");
+/* ============================
+   CONFIG
+============================ */
+
+
 
 const pool = new Pool({
-  connectionString: DB_URL,
-  ssl: isRailwayLike ? { rejectUnauthorized: false } : false,
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL
+    ? { rejectUnauthorized: false }
+    : false
 });
 
-async function dbQuery(text, params) {
-  return pool.query(text, params);
+/* ============================
+   SERVIR FRONTEND (Railway)
+============================ */
+
+app.use(express.static(path.join(__dirname, "public")));
+
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+/* ============================
+   WORKERS BASE
+============================ */
+
+const WORKER_MIN = 16;
+const WORKER_MAX = 25;
+
+function generateWorkers() {
+  const arr = [];
+  for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
+    arr.push(`B${i}`);
+  }
+  return arr;
 }
 
-// ====== Catálogo de bonchadores ======
-const catalogs = {
-  workers: ["B16","B17","B18","B19","B20","B21","B22","B23","B24","B25"],
-};
+let workers = generateWorkers();
 
-// ====== Cache de Variedades: (id -> nombre) ======
-let variedadMap = new Map();
+/* ============================
+   SSE CLIENTES
+============================ */
 
-async function refreshVariedadesCache() {
-  const r = await dbQuery("SELECT id, nombre FROM variedades WHERE activo=true", []);
-  const m = new Map();
-  for (const row of r.rows) m.set(String(row.id).toUpperCase(), row.nombre);
-  variedadMap = m;
-  return m.size;
+const clients = new Set();
+
+function broadcast(data) {
+  const msg = `data: ${JSON.stringify(data)}\n\n`;
+  for (const res of clients) {
+    res.write(msg);
+  }
 }
 
-// ====== Memoria (para dashboard + SSE) ======
-const scans = [];                 // registros ya completados (memoria)
-const seqByWorker = new Map();     // secuencial por bonchador
-const pendingByWorker = new Map(); // pendientes por bonchador
-const workerNames = new Map();     // nombre editable
-const sseClients = new Set();
+app.get("/api/stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
 
-// Pendiente GLOBAL para permitir B→A sin worker en body
-let globalPendingB = null; // { variedad_id, variedad_nombre, grado_cm, tallos, raw_b, updatedAtIso }
+  clients.add(res);
 
-for (const w of catalogs.workers) {
-  seqByWorker.set(w, 0);
-  pendingByWorker.set(w, {
-    worker: w,
-    tallos: null,
-    grado_cm: null,
-    variedad_id: null,
-    variedad_nombre: null,
-    updatedAtIso: null,
-    raw_a: null,
-    raw_b: null,
+  const scans = await getScans(200);
+  const pending = await getPendingAll();
+
+  res.write(
+    `data: ${JSON.stringify({
+      kind: "snapshot",
+      snapshot: scans,
+      pending,
+      workers: workers.map(w => ({ code: w, name: w }))
+    })}\n\n`
+  );
+
+  req.on("close", () => {
+    clients.delete(res);
   });
-  workerNames.set(w, `Bonchador ${w}`);
+});
+
+/* ============================
+   HELPERS PARSEO
+============================ */
+
+function parseWorker(code) {
+  const m = code.match(/^B(\d{2})$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (n < WORKER_MIN || n > WORKER_MAX) return null;
+  return `B${n}`;
 }
 
-function nowIso() { return new Date().toISOString(); }
-
-function sendSse(payload) {
-  const data = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const res of sseClients) {
-    try { res.write(data); }
-    catch { sseClients.delete(res); }
-  }
+function parseProduct(code) {
+  const m = code.match(/^V(\d{2})-(\d{1,3})-(\d{1,3})$/);
+  if (!m) return null;
+  return {
+    variedad_id: `V${m[1]}`,
+    grado_cm: parseInt(m[2], 10),
+    tallos: parseInt(m[3], 10),
+    raw: code
+  };
 }
 
-// ====== DB: leer scans (hoy por defecto) ======
-async function fetchScansFromDb({ limit = 2000, onlyToday = true } = {}) {
-  const where = onlyToday
-    ? "WHERE (s.ts AT TIME ZONE 'America/Bogota')::date = (NOW() AT TIME ZONE 'America/Bogota')::date"
-    : "";
+/* ============================
+   PENDIENTES
+============================ */
 
-  // Usamos variedad_id y variedad_nombre (columna REAL en scans).
-  // Si variedad_nombre está null en scans, lo completamos con join (COALESCE).
-  const q = `
-    SELECT
-      s.id         AS scan_id,
-      s.ts         AS ts,
-      s.worker     AS worker,
-      s.tallos     AS tallos,
-      s.grado_cm   AS grado_cm,
-      s.variedad_id AS variedad_id,
-      COALESCE(s.variedad_nombre, v.nombre) AS variedad_nombre
-    FROM scans s
-    LEFT JOIN variedades v ON v.id = s.variedad_id
-    ${where}
-    ORDER BY s.ts DESC
-    LIMIT $1;
-  `;
+let pendingAByWorker = {};   // B16 -> A
+let globalPendingB = null;   // Vxx esperando A
 
-  const r = await dbQuery(q, [limit]);
-  return r.rows.map((row) => ({
-    ts: row.ts,
-    scan_id: row.scan_id,
-    worker: String(row.worker),
-    worker_name: workerNames.get(String(row.worker)) || String(row.worker),
-    seq: null,
-    tallos: row.tallos,
-    grado_cm: row.grado_cm,
-    variedad_id: row.variedad_id,
-    variedad_nombre: row.variedad_nombre || null,
-  }));
-}
+/* ============================
+   RUTAS API
+============================ */
 
-// ====== DB: guardar scan COMPLETO ======
-async function saveScanToDb({ worker, tallos, grado_cm, variedad_id, raw_a, raw_b }) {
-  const w = String(worker || "").toUpperCase();
-  const vid = String(variedad_id || "").toUpperCase();
-
-  if (!catalogs.workers.includes(w)) {
-    return { ok: false, status: "BAD_WORKER", message: `Worker ${w} no permitido` };
-  }
-
-  const v = await dbQuery(
-    "SELECT id, nombre FROM variedades WHERE UPPER(id)=UPPER($1) AND activo=true",
-    [vid]
-  );
-  if (!v.rows.length) {
-    return { ok: false, status: "BAD_VARIETY", message: `Variedad ${vid} no existe o está inactiva` };
-  }
-
-  const vNombre = v.rows[0].nombre || null;
-
-  const ins = await dbQuery(
-    `INSERT INTO scans
-      (worker, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
-     RETURNING id, ts`,
-    [w, tallos ?? null, vid, grado_cm ?? null, raw_a ?? null, raw_b ?? null, vNombre]
-  );
-
-  return { ok: true, status: "COMPLETE", scan_id: ins.rows[0].id, ts: ins.rows[0].ts, variedad_nombre: vNombre };
-}
-
-// ====== Parser A/B ======
-// A: B16..B25
-// B: V01-60-25 => variedad_id=V01, grado_cm=60, tallos=25
-function parseBarcode(barcode) {
-  const s = String(barcode || "").trim();
-  if (!s) return { type: "UNKNOWN" };
-  const up = s.toUpperCase();
-
-  // A (bonchador)
-  if (/^B\d{2}$/.test(up)) {
-    if (!catalogs.workers.includes(up)) return { type: "UNKNOWN", raw: s, reason: "WORKER_NOT_ALLOWED" };
-    return { type: "A", worker: up };
-  }
-
-  // B (variedad-grado-tallos)
-  // Formato: V01-60-25
-  if (/^V\d{2}-\d{1,3}-\d{1,3}$/.test(up)) {
-    const [vid, g, t] = up.split("-");
-    const grado_cm = parseInt(g, 10);
-    const tallos = parseInt(t, 10);
-
-    if (!Number.isFinite(grado_cm) || grado_cm <= 0) return { type: "UNKNOWN", raw: s, reason: "BAD_GRADO" };
-    if (!Number.isFinite(tallos) || tallos <= 0) return { type: "UNKNOWN", raw: s, reason: "BAD_TALLOS" };
-
-    return { type: "B", variedad_id: vid, grado_cm, tallos, raw_b: up };
-  }
-
-  return { type: "UNKNOWN", raw: s };
-}
-
-// ====== Completar registro si ya está todo en pendingByWorker ======
-async function maybeBuildRecord(worker) {
-  const w = String(worker || "").toUpperCase();
-  const p = pendingByWorker.get(w);
-  if (!p) return null;
-
-  if (p.variedad_id && p.grado_cm && p.tallos) {
-    const seq = (seqByWorker.get(w) || 0) + 1;
-    seqByWorker.set(w, seq);
-
-    let dbOut;
-    try {
-      dbOut = await saveScanToDb({
-        worker: w,
-        tallos: p.tallos,
-        grado_cm: p.grado_cm,
-        variedad_id: p.variedad_id,
-        raw_a: p.raw_a,
-        raw_b: p.raw_b,
-      });
-      if (!dbOut.ok) return { error: true, status: dbOut.status, message: dbOut.message };
-    } catch (e) {
-      return { error: true, status: "DB_ERROR", message: String(e.message || e) };
-    }
-
-    const vid = String(p.variedad_id).toUpperCase();
-    const variedad_nombre = dbOut.variedad_nombre || p.variedad_nombre || variedadMap.get(vid) || null;
-
-    const reg = {
-      ts: dbOut.ts || nowIso(),
-      scan_id: dbOut.scan_id,
-      worker: w,
-      worker_name: workerNames.get(w) || w,
-      seq: String(seq).padStart(6, "0"),
-      tallos: p.tallos,
-      grado_cm: p.grado_cm,
-      variedad_id: p.variedad_id,
-      variedad_nombre,
-    };
-
-    // reset pending del worker
-    pendingByWorker.set(w, {
-      worker: w,
-      tallos: null,
-      grado_cm: null,
-      variedad_id: null,
-      variedad_nombre: null,
-      updatedAtIso: null,
-      raw_a: null,
-      raw_b: null,
-    });   
-
-    scans.push(reg);
-    if (scans.length > 50000) scans.splice(0, scans.length - 50000);
-
-    sendSse({ kind: "scan", reg });
-    sendSse({ kind: "pendingAll", pending: Object.fromEntries([...pendingByWorker.entries()]) });
-    sendSse({ kind: "globalPendingB", globalPendingB });
-
-    return reg;
-  }
-
-  return null;
-}
-
-// ====== API ======
 app.get("/api/workers", (req, res) => {
-  res.set("Cache-Control", "no-store");
-  res.json(catalogs.workers.map((code) => ({ code, name: workerNames.get(code) || code })));
-});
-
-app.post("/api/workers", (req, res) => {
-  const { code, name } = req.body || {};
-  const c = String(code || "").trim().toUpperCase();
-  if (!catalogs.workers.includes(c)) return res.status(400).json({ error: "Worker inválido" });
-
-  const n = String(name || "").trim();
-  if (n.length < 1 || n.length > 40) return res.status(400).json({ error: "Nombre inválido (1-40 chars)" });
-
-  workerNames.set(c, n);
-
-  // refresca nombres en memoria
-  for (let i = 0; i < scans.length; i++) if (String(scans[i].worker).toUpperCase() === c) scans[i].worker_name = n;
-
-  sendSse({
-    kind: "workers",
-    workers: catalogs.workers.map((code) => ({ code, name: workerNames.get(code) || code })),
-  });
-
-  res.json({ ok: true, code: c, name: n });
-});
-
-app.get("/api/pendingAll", (req, res) => {
-  res.set("Cache-Control", "no-store");
-  res.json(Object.fromEntries([...pendingByWorker.entries()]));
+  res.json(workers.map(w => ({ code: w, name: w })));
 });
 
 app.get("/api/scans", async (req, res) => {
-  try {
-    const limit = Math.min(Number(req.query.limit) || 500, 5000);
-    const onlyToday = String(req.query.today || "1") !== "0";
-    const arr = await fetchScansFromDb({ limit, onlyToday });
-    res.set("Cache-Control", "no-store");
-    res.json(arr);
-  } catch (e) {
-    res.status(500).json({ error: "DB error", detail: String(e.message || e) });
-  }
+  const limit = parseInt(req.query.limit || "100", 10);
+  const rows = await getScans(limit);
+  res.json(rows);
 });
 
-// POST /api/scan
-// Body: { barcode: "...", worker?: "B16" }
-// - Si llega A (B16): setea worker y si hay globalPendingB lo completa.
-// - Si llega B (V01-60-25): si viene worker en body, se asigna a ese worker; si no, queda como pendiente global.
+app.get("/api/pendingAll", async (req, res) => {
+  const p = await getPendingAll();
+  res.json(p);
+});
+
+/* ============================
+   POST SCAN
+============================ */
+
 app.post("/api/scan", async (req, res) => {
-  const { barcode, worker: workerFromBody } = req.body || {};
-  if (!barcode || typeof barcode !== "string") return res.status(400).json({ error: "Falta barcode" });
+  try {
+    const { barcode, worker } = req.body;
+    if (!barcode) return res.status(400).json({ error: "barcode requerido" });
 
-  const parsed = parseBarcode(barcode);
-  if (parsed.type === "UNKNOWN") {
-    return res.status(400).json({ error: "Barcode no reconocido", raw: parsed.raw || barcode, reason: parsed.reason });
-  }
+    const code = barcode.trim().toUpperCase();
 
-  // ========= Caso A: bonchador =========
-  if (parsed.type === "A") {
-    const w = parsed.worker;
+    const workerCode = parseWorker(code);
+    const productCode = parseProduct(code);
 
-    const p = pendingByWorker.get(w);
-    const updated = { ...p, updatedAtIso: nowIso(), raw_a: parsed.worker };
+    // ===== ESCANEO A (B16..B25) =====
+    if (workerCode) {
+      pendingAByWorker[workerCode] = workerCode;
 
-    // Si hay un B global esperando, lo aplicamos a este worker
-    if (globalPendingB) {
-      updated.variedad_id = globalPendingB.variedad_id;
-      updated.variedad_nombre = globalPendingB.variedad_nombre;
-      updated.grado_cm = globalPendingB.grado_cm;
-      updated.tallos = globalPendingB.tallos;
-      updated.raw_b = globalPendingB.raw_b;
-
-      globalPendingB = null;
-    }
-
-    pendingByWorker.set(w, updated);
-
-    sendSse({ kind: "pendingAll", pending: Object.fromEntries([...pendingByWorker.entries()]) });
-    sendSse({ kind: "globalPendingB", globalPendingB });
-
-    const reg = await maybeBuildRecord(w);
-    if (reg && reg.error) {
-      return res.status(400).json({ ok: false, status: reg.status, message: reg.message, parsed, pending: pendingByWorker.get(w) });
-    }
-
-    const status = reg ? "COMPLETE" : "PENDING_B";
-    return res.json({ ok: true, status, parsed, pending: pendingByWorker.get(w), globalPendingB, reg: reg || null });
-  }
-
-  // ========= Caso B: variedad-grado-tallos =========
-  if (parsed.type === "B") {
-    // Nombre desde cache (si está), si no, se resolverá al guardar
-    const vid = String(parsed.variedad_id).toUpperCase();
-    const vNombre = variedadMap.get(vid) || null;
-
-    const bodyW = String(workerFromBody || "").trim().toUpperCase();
-
-    // Si llega con worker en body, lo asignamos directo al worker
-    if (bodyW && pendingByWorker.has(bodyW)) {
-      const p = pendingByWorker.get(bodyW);
-      const updated = {
-        ...p,
-        updatedAtIso: nowIso(),
-        variedad_id: vid,
-        variedad_nombre: vNombre,
-        grado_cm: parsed.grado_cm,
-        tallos: parsed.tallos,
-        raw_b: String(barcode).toUpperCase(),
-      };
-      pendingByWorker.set(bodyW, updated);
-
-      sendSse({ kind: "pendingAll", pending: Object.fromEntries([...pendingByWorker.entries()]) });
-
-      const reg = await maybeBuildRecord(bodyW);
-      if (reg && reg.error) {
-        return res.status(400).json({ ok: false, status: reg.status, message: reg.message, parsed, pending: pendingByWorker.get(bodyW) });
+      if (globalPendingB) {
+        const result = await saveScan(workerCode, globalPendingB);
+        globalPendingB = null;
+        broadcast({ kind: "scan", reg: result });
       }
 
-      const status = reg ? "COMPLETE" : "PENDING_A";
-      return res.json({ ok: true, status, parsed, pending: pendingByWorker.get(bodyW), globalPendingB, reg: reg || null });
+      return res.json({ ok: true });
     }
 
-    // Si NO llega worker, lo guardamos como pendiente global (B→A)
-    globalPendingB = {
-      variedad_id: vid,
-      variedad_nombre: vNombre,
-      grado_cm: parsed.grado_cm,
-      tallos: parsed.tallos,
-      raw_b: String(barcode).toUpperCase(),
-      updatedAtIso: nowIso(),
-    };
+    // ===== ESCANEO B (Vxx-gg-tt) =====
+    if (productCode) {
+      if (worker) {
+        const w = parseWorker(worker);
+        if (!w) return res.status(400).json({ error: "worker inválido" });
 
-    sendSse({ kind: "globalPendingB", globalPendingB });
+        const result = await saveScan(w, productCode);
+        broadcast({ kind: "scan", reg: result });
+        return res.json({ ok: true });
+      }
 
-    return res.json({ ok: true, status: "PENDING_A_GLOBAL", parsed, globalPendingB });
+      globalPendingB = productCode;
+      return res.json({ ok: true });
+    }
+
+    return res.status(400).json({ error: "Código no reconocido" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error interno" });
   }
-
-  return res.status(400).json({ error: "Estado no soportado" });
 });
 
-// SSE
-app.get("/api/stream", (req, res) => {
-  res.set({
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "Access-Control-Allow-Origin": "*",
-  });
-  res.flushHeaders?.();
+/* ============================
+   DB FUNCTIONS
+============================ */
 
-  sseClients.add(res);
+async function saveScan(worker, product) {
+  const client = await pool.connect();
+  try {
+    const variedad = await client.query(
+      "SELECT nombre FROM variedades WHERE id = $1",
+      [product.variedad_id]
+    );
 
-  const snapshot = scans.slice(-200).reverse();
-  const pending = Object.fromEntries([...pendingByWorker.entries()]);
-  const workers = catalogs.workers.map((code) => ({ code, name: workerNames.get(code) || code }));
+    const variedad_nombre = variedad.rows[0]
+      ? variedad.rows[0].nombre
+      : product.variedad_id;
 
-  res.write(`data: ${JSON.stringify({ kind: "snapshot", snapshot, pending, workers, globalPendingB })}\n\n`);
+    const result = await client.query(
+      `INSERT INTO scans
+       (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre)
+       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        worker,
+        product.tallos,
+        product.variedad_id,
+        product.grado_cm,
+        worker,
+        product.raw,
+        variedad_nombre
+      ]
+    );
 
-  req.on("close", () => {
-    sseClients.delete(res);
-    try { res.end(); } catch {}
-  });
-});
+    return result.rows[0];
 
-// Precarga de memoria desde DB (hoy) para que no “arranque en cero” al reconectar
-async function rebuildInMemoryFromDb() {
-  const rows = await fetchScansFromDb({ limit: 5000, onlyToday: true });
-
-  scans.length = 0;
-  seqByWorker.clear();
-  for (const w of catalogs.workers) seqByWorker.set(w, 0);
-
-  const asc = [...rows].reverse();
-  const localSeq = new Map();
-  for (const w of catalogs.workers) localSeq.set(w, 0);
-
-  for (const reg of asc) {
-    const w = String(reg.worker).toUpperCase();
-    if (!localSeq.has(w)) continue;
-
-    const next = (localSeq.get(w) || 0) + 1;
-    localSeq.set(w, next);
-
-    reg.seq = String(next).padStart(6, "0");
-    reg.worker_name = workerNames.get(w) || w;
-
-    scans.push(reg);
+  } finally {
+    client.release();
   }
-
-  for (const w of catalogs.workers) {
-    seqByWorker.set(w, localSeq.get(w) || 0);
-  }
-
-  console.log("Precarga OK. Registros hoy:", scans.length);
 }
 
-// Start
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log(`Servidor listo: http://127.0.0.1:${PORT}`);
-  console.log(`DB: ${DB_URL ? "DATABASE_URL configurada" : "FALTA DATABASE_URL"}`);
+async function getScans(limit) {
+  const result = await pool.query(
+    "SELECT * FROM scans ORDER BY ts DESC LIMIT $1",
+    [limit]
+  );
+  return result.rows;
+}
 
-  try {
-    await refreshVariedadesCache().catch(()=>{});
-    await rebuildInMemoryFromDb();
-  } catch (e) {
-    console.log("Precarga falló:", e.message || e);
-  }
+async function getPendingAll() {
+  const obj = {};
+  workers.forEach(w => {
+    obj[w] = pendingAByWorker[w] || {};
+  });
+  return obj;
+}
+
+/* ============================
+   START SERVER
+============================ */
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor activo en puerto ${PORT}`);
 });
