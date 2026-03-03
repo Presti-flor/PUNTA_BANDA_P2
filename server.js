@@ -31,7 +31,6 @@ function generateWorkers() {
 
 let workers = generateWorkers();
 let workerNameMap = {}; 
-let pendingAByWorker = {}; 
 const clients = new Set();
 
 /* ============================
@@ -44,10 +43,9 @@ app.get("/", (req, res) => {
 });
 
 /* ============================
-    RUTAS DE API (CORREGIDAS)
+    RUTAS DE API
 ============================ */
 
-// Obtener lista de trabajadores
 app.get("/api/workers", (req, res) => {
   res.json(workers.map((w) => ({ 
     code: w, 
@@ -55,7 +53,6 @@ app.get("/api/workers", (req, res) => {
   })));
 });
 
-// Guardar nombres de bonchadores
 app.post("/api/workers", (req, res) => {
   const { code, name } = req.body;
   if (!code || !name) return res.status(400).json({ error: "Datos faltantes" });
@@ -64,19 +61,17 @@ app.post("/api/workers", (req, res) => {
   res.json({ ok: true });
 });
 
-// NUEVA: Obtener últimos registros (Evita error 404 en la tabla)
 app.get("/api/scans", async (req, res) => {
   try {
-    const limit = req.query.limit || 150;
-    const scans = await getScans(limit);
-    res.json(scans);
+    const limit = req.query.limit || 200;
+    const result = await pool.query("SELECT * FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: "Error al obtener registros" });
   }
 });
 
-// NUEVA: Obtener pendientes (Evita error 404 en el cuadro de texto)
-app.get("/api/pendingAll", async (req, res) => {
+app.get("/api/pendingAll", (req, res) => {
   const obj = {};
   workers.forEach(w => {
     obj[w] = { variedad: "---", grado: "--", tallos: "--" }; 
@@ -85,7 +80,7 @@ app.get("/api/pendingAll", async (req, res) => {
 });
 
 /* ============================
-    SISTEMA DE ESCANEO (LA CLAVE)
+    LÓGICA DE ESCANEO
 ============================ */
 
 function parseWorker(code) {
@@ -98,7 +93,6 @@ function parseWorker(code) {
 
 function parseProduct(code) {
   if (!code) return null;
-  // Regex flexible para V1 o V01
   const m = code.trim().toUpperCase().match(/^V(\d{1,2})-(\d{1,3})-(\d{1,3})$/);
   if (!m) return null;
   return {
@@ -113,7 +107,6 @@ app.post("/api/scan", async (req, res) => {
   try {
     const { barcode, worker } = req.body;
 
-    // CASO 1: Envío completo desde el HTML (Registro directo)
     if (worker && barcode) {
       const wCode = parseWorker(worker);
       const pCode = parseProduct(barcode);
@@ -123,55 +116,53 @@ app.post("/api/scan", async (req, res) => {
         return res.json({ ok: true });
       }
     }
-
-    // CASO 2: Escaneo individual (Respaldo)
-    const code = (barcode || "").trim().toUpperCase();
-    const isW = parseWorker(code);
-    const isP = parseProduct(code);
-
-    if (isW || isP) {
-      return res.json({ ok: true, message: "Pendiente de pareja" });
-    }
-
-    res.status(400).json({ error: "Código no reconocido" });
+    res.status(400).json({ error: "Datos de escaneo incompletos o inválidos" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Error interno del servidor" });
+    res.status(500).json({ error: "Error interno" });
   }
 });
 
 /* ============================
-    BASE DE DATOS Y SSE
+    BASE DE DATOS Y BROADCAST
 ============================ */
 
 async function saveScan(worker, product) {
   const client = await pool.connect();
   try {
-    // Buscar nombre de variedad si existe la tabla, si no usa el ID
+    // Intentar obtener el nombre de la variedad si existe la tabla
     let varNombre = product.variedad_id;
     try {
-        const varRes = await client.query("SELECT nombre FROM variedades WHERE id = $1", [product.variedad_id]);
-        if (varRes.rows[0]) varNombre = varRes.rows[0].nombre;
-    } catch (e) { /* Variedades table might not exist yet */ }
+      const varRes = await client.query("SELECT nombre FROM variedades WHERE id = $1", [product.variedad_id]);
+      if (varRes.rows[0]) varNombre = varRes.rows[0].nombre;
+    } catch (e) { /* Si no hay tabla de variedades, usamos el ID */ }
 
+    // Obtener el nombre del bonchador del mapa de nombres
     const wName = workerNameMap[worker] || worker;
 
-    const result = await client.query(
-      `INSERT INTO scans 
-       (ts, worker, worker_name, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [worker, wName, product.tallos, product.variedad_id, product.grado_cm, worker, product.raw, varNombre]
-    );
+    const query = `
+      INSERT INTO scans 
+      (ts, worker, worker_name, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre)
+      VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *
+    `;
+    
+    const values = [
+      worker, 
+      wName, 
+      product.tallos, 
+      product.variedad_id, 
+      product.grado_cm, 
+      worker, 
+      product.raw, 
+      varNombre
+    ];
+
+    const result = await client.query(query, values);
     return result.rows[0];
   } finally {
     client.release();
   }
-}
-
-async function getScans(limit) {
-  const result = await pool.query("SELECT * FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
-  return result.rows;
 }
 
 function broadcast(data) {
