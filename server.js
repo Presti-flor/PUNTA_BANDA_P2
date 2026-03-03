@@ -3,6 +3,9 @@ const cors = require("cors");
 const { Pool } = require("pg");
 const path = require("path");
 
+// --- 1. FORZAR ZONA HORARIA DE COLOMBIA ---
+process.env.TZ = "America/Bogota";
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -14,7 +17,6 @@ const pool = new Pool({
 
 /* ============================
     DICCIONARIO DE VARIEDADES
-    (Aquí puedes cambiar los nombres)
 ============================ */
 const VARIEDAD_MAP = {
   "V01": "FREEDOM",
@@ -22,7 +24,6 @@ const VARIEDAD_MAP = {
   "V03": "MONDIAL",
   "V04": "PINK FLOYD",
   "V05": "ALBA",
-  // Agrega todas las que necesites...
 };
 
 const WORKER_MIN = 16;
@@ -56,15 +57,15 @@ app.post("/api/workers", (req, res) => {
   res.json({ ok: true });
 });
 
-// GET SCANS: Aquí "inyectamos" el nombre de la variedad para el HTML
 app.get("/api/scans", async (req, res) => {
   try {
     const limit = req.query.limit || 200;
     const result = await pool.query("SELECT ts, worker, tallos, variedad_id, grado_cm FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
     
-    // Mapeamos los resultados para agregar el nombre de la variedad "al vuelo"
     const finalData = result.rows.map(row => ({
       ...row,
+      // Convertimos la fecha a string ISO para que el navegador la entienda bien
+      ts: row.ts,
       variedad_nombre: VARIEDAD_MAP[row.variedad_id] || row.variedad_id,
       worker_name: workerNameMap[row.worker] || row.worker
     }));
@@ -110,7 +111,6 @@ app.post("/api/scan", async (req, res) => {
     if (wCode && pCode) {
       const result = await saveScan(wCode, pCode);
       
-      // Enviamos el nombre por SSE también
       const broadcastData = {
         ...result,
         variedad_nombre: VARIEDAD_MAP[result.variedad_id] || result.variedad_id,
@@ -129,12 +129,16 @@ app.post("/api/scan", async (req, res) => {
 async function saveScan(worker, product) {
   const client = await pool.connect();
   try {
+    // --- 2. USAR LA FECHA DE NODE (CONFIGURADA EN COLOMBIA) ---
+    const localTimestamp = new Date();
+
     const query = `
       INSERT INTO scans (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
-      VALUES (NOW(), $1, $2, $3, $4, $5, $6)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
-    const values = [worker, product.tallos, product.variedad_id, product.grado_cm, worker, product.raw];
+    // Pasamos el localTimestamp ($1) en lugar de usar NOW() de Postgres
+    const values = [localTimestamp, worker, product.tallos, product.variedad_id, product.grado_cm, worker, product.raw];
     const result = await client.query(query, values);
     return result.rows[0];
   } finally {
@@ -157,4 +161,4 @@ app.get("/api/stream", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Puerto ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT} (Hora Colombia)`));
