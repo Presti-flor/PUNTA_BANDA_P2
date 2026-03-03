@@ -690,26 +690,41 @@
 
   async function saveNames() {
     const inputs = namesBox.querySelectorAll("input[data-worker]");
-    for (const inp of inputs) {
-      const code = inp.dataset.worker;
-      const name = (inp.value || "").trim();
-      if (!name) continue;
+    let successCount = 0;
 
-      const res = await fetch(API + "/api/workers", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ code, name })
-      });
-      if (!res.ok) {
-        alert(`No se pudo guardar ${code}. Revisa el nombre (1-40).`);
-        return;
-      }
+    for (const inp of inputs) {
+        const code = inp.dataset.worker;
+        const name = (inp.value || "").trim();
+        
+        // Si el nombre está vacío, no lo enviamos
+        if (!name) continue;
+
+        try {
+            const res = await fetch(`${API}/api/workers`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ code, name })
+            });
+
+            if (res.ok) {
+                successCount++;
+            } else {
+                console.error(`Error al guardar bonchador ${code}`);
+            }
+        } catch (err) {
+            console.error(`Error de red para ${code}:`, err);
+        }
     }
-    await loadWorkers();
-    // refresca editor con lo ya guardado
-    renderNamesEditorOnce();
-    await refreshAll();
-  }
+
+    if (successCount > 0) {
+        alert(`Se actualizaron ${successCount} nombres correctamente.`);
+        // Recargamos los datos desde el servidor para que se vean en las gráficas y tablas
+        await loadWorkers();
+        await refreshAll();
+    } else {
+        alert("No se realizaron cambios o hubo un error al conectar.");
+    }
+}
 
   function renderTable() {
   tb.innerHTML = "";
