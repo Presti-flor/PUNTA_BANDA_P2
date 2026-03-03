@@ -204,7 +204,9 @@
 
 <script>
 (() => {
-  const API = "http://127.0.0.1:3000";
+  const API = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+  ? "http://127.0.0.1:3000" 
+  : "https://puntabandap2-production.up.railway.app";
   const $ = (id) => document.getElementById(id);
 
   const dot = $("dot"), st = $("st"), mode = $("mode");
