@@ -10,20 +10,14 @@ app.use(express.json());
 /* ============================
    CONFIG
 ============================ */
-
-
-
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL
-    ? { rejectUnauthorized: false }
-    : false
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
 /* ============================
    SERVIR FRONTEND (Railway)
 ============================ */
-
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
@@ -68,6 +62,7 @@ app.get("/api/stream", async (req, res) => {
 
   clients.add(res);
 
+  // Enviar snapshot inicial con los datos de escaneo y pendientes
   const scans = await getScans(200);
   const pending = await getPendingAll();
 
@@ -76,12 +71,18 @@ app.get("/api/stream", async (req, res) => {
       kind: "snapshot",
       snapshot: scans,
       pending,
-      workers: workers.map(w => ({ code: w, name: w }))
+      workers: workers.map((w) => ({ code: w, name: w })),
     })}\n\n`
   );
 
+  // Mantener la conexión SSE activa enviando un "ping" cada 20 segundos
+  const pingInterval = setInterval(() => {
+    res.write("data: ping\n\n");
+  }, 20000);
+
   req.on("close", () => {
     clients.delete(res);
+    clearInterval(pingInterval); // Limpiar ping cuando se cierra la conexión
   });
 });
 
@@ -104,7 +105,7 @@ function parseProduct(code) {
     variedad_id: `V${m[1]}`,
     grado_cm: parseInt(m[2], 10),
     tallos: parseInt(m[3], 10),
-    raw: code
+    raw: code,
   };
 }
 
@@ -112,15 +113,15 @@ function parseProduct(code) {
    PENDIENTES
 ============================ */
 
-let pendingAByWorker = {};   // B16 -> A
-let globalPendingB = null;   // Vxx esperando A
+let pendingAByWorker = {}; // B16 -> A
+let globalPendingB = null; // Vxx esperando A
 
 /* ============================
    RUTAS API
 ============================ */
 
 app.get("/api/workers", (req, res) => {
-  res.json(workers.map(w => ({ code: w, name: w })));
+  res.json(workers.map((w) => ({ code: w, name: w })));
 });
 
 app.get("/api/scans", async (req, res) => {
@@ -177,7 +178,6 @@ app.post("/api/scan", async (req, res) => {
     }
 
     return res.status(400).json({ error: "Código no reconocido" });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Error interno" });
@@ -212,12 +212,11 @@ async function saveScan(worker, product) {
         product.grado_cm,
         worker,
         product.raw,
-        variedad_nombre
+        variedad_nombre,
       ]
     );
 
     return result.rows[0];
-
   } finally {
     client.release();
   }
@@ -233,7 +232,7 @@ async function getScans(limit) {
 
 async function getPendingAll() {
   const obj = {};
-  workers.forEach(w => {
+  workers.forEach((w) => {
     obj[w] = pendingAByWorker[w] || {};
   });
   return obj;
