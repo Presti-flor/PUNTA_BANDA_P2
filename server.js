@@ -57,16 +57,7 @@ app.get("/api/workers", (req, res) => {
 });
 
 // ESTA ES LA RUTA QUE TE FALTABA (Soluciona el error 404)
-app.post("/api/workers", (req, res) => {
-  const { code, name } = req.body;
-  if (!code || !name) {
-    return res.status(400).json({ error: "Código y nombre requeridos" });
-  }
-  const upCode = code.trim().toUpperCase();
-  workerNameMap[upCode] = name.trim();
-  console.log(`Nombre actualizado: ${upCode} -> ${name}`);
-  res.json({ ok: true });
-});
+
 
 /* ============================
     SISTEMA DE ESCANEO Y SSE
