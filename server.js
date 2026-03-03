@@ -3,7 +3,7 @@ const cors = require("cors");
 const { Pool } = require("pg");
 const path = require("path");
 
-// --- 1. FORZAR ZONA HORARIA DE COLOMBIA ---
+// FORZAR ZONA HORARIA COLOMBIA
 process.env.TZ = "America/Bogota";
 
 const app = express();
@@ -14,17 +14,6 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
-
-/* ============================
-    DICCIONARIO DE VARIEDADES
-============================ */
-const VARIEDAD_MAP = {
-  "V01": "FREEDOM",
-  "V02": "EXPLORER",
-  "V03": "MONDIAL",
-  "V04": "PINK FLOYD",
-  "V05": "ALBA",
-};
 
 const WORKER_MIN = 16;
 const WORKER_MAX = 25;
@@ -57,21 +46,33 @@ app.post("/api/workers", (req, res) => {
   res.json({ ok: true });
 });
 
+// GET SCANS: Ahora trae el nombre desde la tabla 'variedades' usando LEFT JOIN
 app.get("/api/scans", async (req, res) => {
   try {
     const limit = req.query.limit || 200;
-    const result = await pool.query("SELECT ts, worker, tallos, variedad_id, grado_cm FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
+    const query = `
+      SELECT 
+        s.ts, 
+        s.worker, 
+        s.tallos, 
+        s.variedad_id, 
+        s.grado_cm,
+        COALESCE(v.nombre, s.variedad_id) AS variedad_nombre
+      FROM scans s
+      LEFT JOIN variedades v ON s.variedad_id = v.id
+      ORDER BY s.ts DESC 
+      LIMIT $1
+    `;
+    const result = await pool.query(query, [limit]);
     
     const finalData = result.rows.map(row => ({
       ...row,
-      // Convertimos la fecha a string ISO para que el navegador la entienda bien
-      ts: row.ts,
-      variedad_nombre: VARIEDAD_MAP[row.variedad_id] || row.variedad_id,
       worker_name: workerNameMap[row.worker] || row.worker
     }));
 
     res.json(finalData);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Error en DB" });
   }
 });
@@ -109,12 +110,16 @@ app.post("/api/scan", async (req, res) => {
     const pCode = parseProduct(barcode);
 
     if (wCode && pCode) {
-      const result = await saveScan(wCode, pCode);
+      const savedReg = await saveScan(wCode, pCode);
       
+      // Buscamos el nombre de la variedad para el mensaje en tiempo real (SSE)
+      const varRes = await pool.query("SELECT nombre FROM variedades WHERE id = $1", [pCode.variedad_id]);
+      const varNombre = varRes.rows[0] ? varRes.rows[0].nombre : pCode.variedad_id;
+
       const broadcastData = {
-        ...result,
-        variedad_nombre: VARIEDAD_MAP[result.variedad_id] || result.variedad_id,
-        worker_name: workerNameMap[result.worker] || result.worker
+        ...savedReg,
+        variedad_nombre: varNombre,
+        worker_name: workerNameMap[savedReg.worker] || savedReg.worker
       };
 
       broadcast({ kind: "scan", reg: broadcastData });
@@ -122,6 +127,7 @@ app.post("/api/scan", async (req, res) => {
     }
     res.status(400).json({ error: "Datos inválidos" });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Error interno" });
   }
 });
@@ -129,15 +135,12 @@ app.post("/api/scan", async (req, res) => {
 async function saveScan(worker, product) {
   const client = await pool.connect();
   try {
-    // --- 2. USAR LA FECHA DE NODE (CONFIGURADA EN COLOMBIA) ---
     const localTimestamp = new Date();
-
     const query = `
       INSERT INTO scans (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
-    // Pasamos el localTimestamp ($1) en lugar de usar NOW() de Postgres
     const values = [localTimestamp, worker, product.tallos, product.variedad_id, product.grado_cm, worker, product.raw];
     const result = await client.query(query, values);
     return result.rows[0];
@@ -161,4 +164,4 @@ app.get("/api/stream", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT} (Hora Colombia)`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT} (Hora y Variedades corregidas)`));
