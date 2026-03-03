@@ -7,35 +7,29 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* ============================
-    CONFIGURACIÓN DE BASE DE DATOS
-============================ */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
 /* ============================
-    ESTADO EN MEMORIA
+    DICCIONARIO DE VARIEDADES
+    (Aquí puedes cambiar los nombres)
 ============================ */
+const VARIEDAD_MAP = {
+  "V01": "FREEDOM",
+  "V02": "EXPLORER",
+  "V03": "MONDIAL",
+  "V04": "PINK FLOYD",
+  "V05": "ALBA",
+  // Agrega todas las que necesites...
+};
+
 const WORKER_MIN = 16;
 const WORKER_MAX = 25;
-
-function generateWorkers() {
-  const arr = [];
-  for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
-    arr.push(`B${i}`);
-  }
-  return arr;
-}
-
-let workers = generateWorkers();
-let workerNameMap = {}; // Los nombres se guardan aquí en RAM, no en la DB
+let workerNameMap = {}; 
 const clients = new Set();
 
-/* ============================
-    SERVIR FRONTEND
-============================ */
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
@@ -47,37 +41,42 @@ app.get("/", (req, res) => {
 ============================ */
 
 app.get("/api/workers", (req, res) => {
-  res.json(workers.map((w) => ({ 
-    code: w, 
-    name: workerNameMap[w] || w 
-  })));
+  const workers = [];
+  for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
+    const code = `B${i}`;
+    workers.push({ code, name: workerNameMap[code] || code });
+  }
+  res.json(workers);
 });
 
 app.post("/api/workers", (req, res) => {
   const { code, name } = req.body;
-  if (!code || !name) return res.status(400).json({ error: "Datos faltantes" });
-  const upCode = code.trim().toUpperCase();
-  workerNameMap[upCode] = name.trim();
+  if (!code || !name) return res.status(400).json({ error: "Faltan datos" });
+  workerNameMap[code.toUpperCase()] = name.trim();
   res.json({ ok: true });
 });
 
+// GET SCANS: Aquí "inyectamos" el nombre de la variedad para el HTML
 app.get("/api/scans", async (req, res) => {
   try {
     const limit = req.query.limit || 200;
-    // Seleccionamos solo las columnas que SÍ existen
-    const result = await pool.query("SELECT ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
-    res.json(result.rows);
+    const result = await pool.query("SELECT ts, worker, tallos, variedad_id, grado_cm FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
+    
+    // Mapeamos los resultados para agregar el nombre de la variedad "al vuelo"
+    const finalData = result.rows.map(row => ({
+      ...row,
+      variedad_nombre: VARIEDAD_MAP[row.variedad_id] || row.variedad_id,
+      worker_name: workerNameMap[row.worker] || row.worker
+    }));
+
+    res.json(finalData);
   } catch (err) {
-    res.status(500).json({ error: "Error al obtener registros" });
+    res.status(500).json({ error: "Error en DB" });
   }
 });
 
 app.get("/api/pendingAll", (req, res) => {
-  const obj = {};
-  workers.forEach(w => {
-    obj[w] = { variedad: "---", grado: "--", tallos: "--" }; 
-  });
-  res.json(obj);
+  res.json({});
 });
 
 /* ============================
@@ -85,16 +84,14 @@ app.get("/api/pendingAll", (req, res) => {
 ============================ */
 
 function parseWorker(code) {
-  if (!code) return null;
-  const m = code.trim().toUpperCase().match(/^B(\d{2})$/);
+  const m = String(code).toUpperCase().match(/^B(\d{2})$/);
   if (!m) return null;
   const n = parseInt(m[1], 10);
   return (n >= WORKER_MIN && n <= WORKER_MAX) ? `B${n}` : null;
 }
 
 function parseProduct(code) {
-  if (!code) return null;
-  const m = code.trim().toUpperCase().match(/^V(\d{1,2})-(\d{1,3})-(\d{1,3})$/);
+  const m = String(code).toUpperCase().match(/^V(\d{1,2})-(\d{1,3})-(\d{1,3})$/);
   if (!m) return null;
   return {
     variedad_id: `V${m[1]}`,
@@ -107,47 +104,37 @@ function parseProduct(code) {
 app.post("/api/scan", async (req, res) => {
   try {
     const { barcode, worker } = req.body;
+    const wCode = parseWorker(worker);
+    const pCode = parseProduct(barcode);
 
-    if (worker && barcode) {
-      const wCode = parseWorker(worker);
-      const pCode = parseProduct(barcode);
-      if (wCode && pCode) {
-        const result = await saveScan(wCode, pCode);
-        broadcast({ kind: "scan", reg: result });
-        return res.json({ ok: true });
-      }
+    if (wCode && pCode) {
+      const result = await saveScan(wCode, pCode);
+      
+      // Enviamos el nombre por SSE también
+      const broadcastData = {
+        ...result,
+        variedad_nombre: VARIEDAD_MAP[result.variedad_id] || result.variedad_id,
+        worker_name: workerNameMap[result.worker] || result.worker
+      };
+
+      broadcast({ kind: "scan", reg: broadcastData });
+      return res.json({ ok: true });
     }
     res.status(400).json({ error: "Datos inválidos" });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Error interno" });
   }
 });
 
-/* ============================
-    BASE DE DATOS (VERSIÓN SIN COLUMNA NOMBRE)
-============================ */
-
 async function saveScan(worker, product) {
   const client = await pool.connect();
   try {
-    // AQUÍ ESTÁ EL CAMBIO: No mencionamos ni worker_name ni variedad_nombre
     const query = `
-      INSERT INTO scans 
-      (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
+      INSERT INTO scans (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
       VALUES (NOW(), $1, $2, $3, $4, $5, $6)
       RETURNING *
     `;
-    
-    const values = [
-      worker, 
-      product.tallos, 
-      product.variedad_id, 
-      product.grado_cm, 
-      worker, 
-      product.raw
-    ];
-
+    const values = [worker, product.tallos, product.variedad_id, product.grado_cm, worker, product.raw];
     const result = await client.query(query, values);
     return result.rows[0];
   } finally {
@@ -170,6 +157,4 @@ app.get("/api/stream", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor activo en puerto ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`Puerto ${PORT}`));
