@@ -30,7 +30,7 @@ function generateWorkers() {
 }
 
 let workers = generateWorkers();
-let workerNameMap = {}; 
+let workerNameMap = {}; // Los nombres se guardan aquí en RAM, no en la DB
 const clients = new Set();
 
 /* ============================
@@ -64,7 +64,8 @@ app.post("/api/workers", (req, res) => {
 app.get("/api/scans", async (req, res) => {
   try {
     const limit = req.query.limit || 200;
-    const result = await pool.query("SELECT * FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
+    // Seleccionamos solo las columnas que SÍ existen
+    const result = await pool.query("SELECT ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: "Error al obtener registros" });
@@ -116,7 +117,7 @@ app.post("/api/scan", async (req, res) => {
         return res.json({ ok: true });
       }
     }
-    res.status(400).json({ error: "Datos de escaneo incompletos o inválidos" });
+    res.status(400).json({ error: "Datos inválidos" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Error interno" });
@@ -124,38 +125,27 @@ app.post("/api/scan", async (req, res) => {
 });
 
 /* ============================
-    BASE DE DATOS Y BROADCAST
+    BASE DE DATOS (VERSIÓN SIN COLUMNA NOMBRE)
 ============================ */
 
 async function saveScan(worker, product) {
   const client = await pool.connect();
   try {
-    // Intentar obtener el nombre de la variedad si existe la tabla
-    let varNombre = product.variedad_id;
-    try {
-      const varRes = await client.query("SELECT nombre FROM variedades WHERE id = $1", [product.variedad_id]);
-      if (varRes.rows[0]) varNombre = varRes.rows[0].nombre;
-    } catch (e) { /* Si no hay tabla de variedades, usamos el ID */ }
-
-    // Obtener el nombre del bonchador del mapa de nombres
-    const wName = workerNameMap[worker] || worker;
-
+    // AQUÍ ESTÁ EL CAMBIO: No mencionamos ni worker_name ni variedad_nombre
     const query = `
       INSERT INTO scans 
-      (ts, worker, worker_name, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre)
-      VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8)
+      (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
+      VALUES (NOW(), $1, $2, $3, $4, $5, $6)
       RETURNING *
     `;
     
     const values = [
       worker, 
-      wName, 
       product.tallos, 
       product.variedad_id, 
       product.grado_cm, 
       worker, 
-      product.raw, 
-      varNombre
+      product.raw
     ];
 
     const result = await client.query(query, values);
