@@ -204,7 +204,7 @@
 
 <script>
 (() => {
-  const API = window.location.origin;
+  const API = "https://puntabandap2-production.up.railway.app/";  // URL proporcionada por Railway
   const $ = (id) => document.getElementById(id);
 
   const dot = $("dot"), st = $("st"), mode = $("mode");
@@ -981,7 +981,7 @@
     };
 
     es.onerror = () => {
-      // OJO: mantenemos polling para no quedarte “pegado” sin updates frfrfrfrfrfr
+      // OJO: mantenemos polling para no quedarte “pegado” sin updates
       setStatus(true, "Conectado", "SSE falló → usando polling");
       startPollingFallback();
     };

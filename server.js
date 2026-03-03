@@ -241,8 +241,7 @@ async function getPendingAll() {
 /* ============================
    START SERVER
 ============================ */
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, "0.0.0.0", () => {
+const PORT = process.env.PORT || 3000;  // Esto es importante para Railway
+app.listen(PORT, () => {
   console.log(`Servidor activo en puerto ${PORT}`);
 });
