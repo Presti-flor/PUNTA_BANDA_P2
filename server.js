@@ -56,7 +56,7 @@ app.get("/api/workers", (req, res) => {
   })));
 });
 
-// ESTA ES LA RUTA QUE TE FALTABA (Soluciona el error 404)
+// Actualizar nombres de los trabajadores
 app.post("/api/workers", (req, res) => {
   const { code, name } = req.body;
   if (!code || !name) {
