@@ -120,8 +120,21 @@ let globalPendingB = null; // Vxx esperando A
    RUTAS API
 ============================ */
 
-app.get("/api/workers", (req, res) => {
-  res.json(workers.map((w) => ({ code: w, name: w })));
+app.post("/api/workers", async (req, res) => {
+  try {
+    const { code, name } = req.body;
+    if (!code || !name) {
+      return res.status(400).json({ error: "Código y nombre son necesarios." });
+    }
+
+    // Guarda el nombre del trabajador en el mapa o base de datos
+    workerNameMap[code] = name;
+
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Error al guardar el nombre." });
+  }
 });
 
 app.get("/api/scans", async (req, res) => {
