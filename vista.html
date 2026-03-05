@@ -464,40 +464,54 @@
     ctx.stroke();
   }
 
-  function drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, groupW, label = "Bonchadores") {
-    const baseY = H - padB;
+  function drawAxisX(
+  ctx, padL, padR, padT, padB, W, H,
+  displayWorkers, workerNameMap,
+  groupW,
+  label = "" // si no quieres rótulo, déjalo vacío
+) {
+  const baseY = H - padB;
 
-    // Marcas en X (centradas con cada barra) y etiquetas rotadas
-    ctx.textAlign = "right";
-    ctx.textBaseline = "top";
-    ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  // Estilo texto
+  ctx.textAlign = "right";
+  ctx.textBaseline = "top";
+  ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
 
-    for (let i = 0; i < displayWorkers.length; i++) {
-      const w = displayWorkers[i];
-      const cx = padL + (i + 0.5) * groupW; // centro de la barra
+  for (let i = 0; i < displayWorkers.length; i++) {
+    const w = displayWorkers[i];
+    const cx = padL + (i + 0.5) * groupW; // centro de la barra
 
-      // Tick corto
-      ctx.strokeStyle = "rgba(147,197,253,.35)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cx, baseY);
-      ctx.lineTo(cx, baseY + 6);
-      ctx.stroke();
+    // Tick corto
+    ctx.strokeStyle = "rgba(147,197,253,.35)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, baseY);
+    ctx.lineTo(cx, baseY + 6);
+    ctx.stroke();
 
-      // Etiqueta rotada (código + nombre corto)
-      const name = (workerNameMap[w] || "").trim();
-      const shortName = name ? ` · ${name}` : "";
-      const labelTxt = `${w}${shortName}`;
+    // === Etiqueta "solo nombre o código" ===
+    const name = (workerNameMap[w] || "").trim();
+    const show = name && name.toUpperCase() !== w ? name : w; // si nombre existe y es distinto al código → nombre; si no → código
 
-      ctx.save();
-      ctx.translate(cx, baseY + 8);
-      ctx.rotate(-Math.PI / 4); // 45°
-      ctx.fillStyle = "rgba(214,230,255,.9)";
-      ctx.fillText(labelTxt, 0, 0);
-      ctx.restore();
-    }
+    // ----- OPCIÓN A: rotada 45° (como ahora) -----
+    ctx.save();
+    ctx.translate(cx, baseY + 8);
+    ctx.rotate(-Math.PI / 4); // 45°
+    ctx.fillStyle = "rgba(214,230,255,.9)";
+    ctx.fillText(show, 0, 0);
+    ctx.restore();
 
-    // Rótulo del eje X
+    // ----- OPCIÓN B (alternativa): horizontal centrada -----
+    // Descomenta estas 4 líneas y comenta el bloque de "OPCIÓN A" si prefieres horizontal:
+    // ctx.save();
+    // ctx.textAlign = "center";
+    // ctx.fillStyle = "rgba(214,230,255,.9)";
+    // ctx.fillText(show, cx, baseY + 8);
+    // ctx.restore();
+  }
+
+  // Rótulo del eje X (si quieres quitarlo, deja label = "")
+  if (label) {
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
@@ -506,6 +520,8 @@
     ctx.fillText(label, padL + (W - padL - padR) / 2, H - 8);
     ctx.restore();
   }
+}
+
 
   function drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, maxV){
   const baseY = H - padB;
@@ -591,7 +607,7 @@
 
     const groupW = usableW / Math.max(1, displayWorkers.length);
     const barW   = Math.max(22, Math.min(62, groupW - 14));
-    drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, groupW, "Bonchadores");
+    drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, groupW, "");
 
     const radius = Math.min(10, barW/2);
 
