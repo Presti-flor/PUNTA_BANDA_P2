@@ -354,7 +354,7 @@
     }
   }
 
-  // -------- Canvas / chart helpers (idéntico a tu versión) --------
+  // -------- Canvas / chart helpers --------
   let ctx = null;
   let cssW = 0, cssH = 0;
   let resizeObserver = null;
@@ -658,9 +658,7 @@
       const grado = (r.grado_cm != null) ? String(r.grado_cm) : "—";
       const tallos = Number(r.tallos) || 0;
 
-      if (!byW[w]) {
-        byW[w] = { totalRamos: 0, totalTallos: 0, variedades: {} };
-      }
+      if (!byW[w]) byW[w] = { totalRamos: 0, totalTallos: 0, variedades: {} };
       const itW = byW[w];
       itW.totalRamos += 1;
       itW.totalTallos += tallos;
@@ -813,11 +811,8 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ code, name })
         });
-
         if (res.ok) successCount++;
-      } catch (err) {
-        // ignore
-      }
+      } catch {}
     }
 
     if (successCount > 0) {
@@ -1114,14 +1109,21 @@
   // =======================
   // CAPTURA "SIEMPRE ACTIVA"
   // (auto foco + wake lock)
+  // y ARREGLO para NO invadir selects/inputs
   // =======================
+
+  // --- NUEVO: control de auto-enfoque para no molestar al usuario ---
+  const INTERACTIVE_SELECTOR = 'input, select, textarea, [contenteditable="true"], button:not(#btnFocus):not(#btnSerial)';
+  let suspendAutoFocus = false; // si true, no forzamos foco al input oculto
+
   function focusScanInput() {
+    if (suspendAutoFocus) return;        // no invadir si el usuario edita algo
     captureEnabled = true;
     setCaptureUI?.();
     if (scanInput) {
       scanInput.setAttribute("tabindex", "0");
       scanInput.focus({ preventScroll: true });
-      const v = scanInput.value; scanInput.value = ""; scanInput.value = v;
+      const v = scanInput.value; scanInput.value = ""; scanInput.value = v; // cursor al final
     }
   }
 
@@ -1143,11 +1145,66 @@
     if (document.visibilityState === "visible") setTimeout(focusScanInput, 0);
   });
 
+  // Watchdog que ya NO roba foco si estás editando algo
   setInterval(() => {
-    if (document.visibilityState === "visible" && document.activeElement !== scanInput) {
+    if (!suspendAutoFocus && document.visibilityState === "visible" && document.activeElement !== scanInput) {
       focusScanInput();
     }
   }, 1500);
+
+  // Pausa auto-enfoque cuando entras a controles interactivos (excepto el scanInput)
+  document.addEventListener("focusin", (e) => {
+    const t = e.target;
+    if (t && t !== scanInput && t.matches(INTERACTIVE_SELECTOR)) {
+      suspendAutoFocus = true;
+    }
+  });
+
+  // Reanuda auto-enfoque cuando sales de los controles (y no queda ninguno enfocado)
+  document.addEventListener("focusout", (e) => {
+    const t = e.target;
+    if (t && t.matches(INTERACTIVE_SELECTOR)) {
+      setTimeout(() => {
+        if (!document.querySelector(`${INTERACTIVE_SELECTOR}:focus`)) {
+          suspendAutoFocus = false;
+          focusScanInput();
+        }
+      }, 120);
+    }
+  }, true);
+
+  // Selects de la barra (hora/día y activos/todos):
+  windowSel.addEventListener("mousedown", () => { suspendAutoFocus = true; });
+  windowSel.addEventListener("change", () => { suspendAutoFocus = false; renderAll(); focusScanInput(); });
+  windowSel.addEventListener("blur",   () => { suspendAutoFocus = false; focusScanInput(); });
+
+  activeSel.addEventListener("mousedown", () => { suspendAutoFocus = true; });
+  activeSel.addEventListener("change", () => { suspendAutoFocus = false; renderAll(); focusScanInput(); });
+  activeSel.addEventListener("blur",   () => { suspendAutoFocus = false; focusScanInput(); });
+
+  // Inputs de nombres (editor):
+  namesBox.addEventListener("focusin", (e) => {
+    if (e.target && e.target.matches('input[data-worker]')) suspendAutoFocus = true;
+  });
+  namesBox.addEventListener("focusout", (e) => {
+    if (e.target && e.target.matches('input[data-worker]')) {
+      setTimeout(() => {
+        if (!namesBox.querySelector('input[data-worker]:focus')) {
+          suspendAutoFocus = false;
+          focusScanInput();
+        }
+      }, 120);
+    }
+  }, true);
+
+  // Botón Guardar nombres → reanuda captura al terminar
+  btnSaveNames.addEventListener("click", () => {
+    setTimeout(() => { suspendAutoFocus = false; focusScanInput(); }, 200);
+  });
+
+  // F9 o botón “Activar captura” → reanuda explícitamente
+  btnFocus.addEventListener("click", () => { suspendAutoFocus = false; focusScanInput(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "F9") { suspendAutoFocus = false; focusScanInput(); } });
 
   // Screen Wake Lock API (mantener pantalla encendida) — requiere HTTPS/localhost
   let wakeLock = null;
@@ -1155,9 +1212,9 @@
     try {
       if ("wakeLock" in navigator && document.visibilityState === "visible") {
         wakeLock = await navigator.wakeLock.request("screen");
-        wakeLock.addEventListener("release", () => { /* se liberó; reintentar al volver visible */ });
+        wakeLock.addEventListener("release", () => {});
       }
-    } catch (err) { /* puede fallar por ahorro de energía, permisos, invisibilidad */ }
+    } catch {}
   }
   async function releaseWakeLock() { try { await wakeLock?.release(); } catch{} wakeLock = null; }
 
@@ -1199,11 +1256,7 @@
           }
         }
       }
-    } catch (e) {
-      // ignore
-    } finally {
-      try { reader.releaseLock(); } catch {}
-    }
+    } catch {} finally { try { reader.releaseLock(); } catch {} }
   }
 
   async function openSerialPort(port) {
@@ -1241,7 +1294,7 @@
         // filters: [{ usbVendorId: 0xXXXX, usbProductId: 0xYYYY }]
       });
       await openSerialPort(port);
-    } catch (err) {
+    } catch {
       setSerialState("DESCONECTADO");
     }
   }

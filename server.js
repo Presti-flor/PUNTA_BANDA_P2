@@ -1,3 +1,13 @@
+// server.js
+// -------------------------------------------------------------
+// Backend para Empaque — Rendimiento por bonchador (PRESTIGE P2)
+// Formatos de escaneo:
+//   • Bonchador + tallos: B16-T20
+//   • Variedad + grado : V01-60
+// Guarda en DB: worker (p.ej. "B16"), tallos (del bonchador), variedad_id, grado_cm
+// Incluye SSE para actualizaciones en tiempo real.
+// -------------------------------------------------------------
+
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
@@ -10,26 +20,39 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// -----------------------------
+// Conexión a Postgres
+// -----------------------------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  // En Railway/Heroku suelen forzar SSL
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
+// -----------------------------
+// Configuración y estado
+// -----------------------------
 const WORKER_MIN = 16;
 const WORKER_MAX = 25;
+
+// Mapa en memoria de nombres de bonchadores (p.ej. { B16: "Juan" })
 let workerNameMap = {};
+
+// Conjunto de clientes SSE conectados
 const clients = new Set();
 
+// Servir estáticos
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-/* ============================
-    RUTAS DE API
-============================ */
+/* ==========================================================
+   RUTAS DE API
+   ========================================================== */
 
+// Lista de bonchadores con nombres
 app.get("/api/workers", (req, res) => {
   const workers = [];
   for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
@@ -39,17 +62,18 @@ app.get("/api/workers", (req, res) => {
   res.json(workers);
 });
 
+// Guardar/actualizar nombre de bonchador (en memoria)
 app.post("/api/workers", (req, res) => {
-  const { code, name } = req.body;
+  const { code, name } = req.body || {};
   if (!code || !name) return res.status(400).json({ error: "Faltan datos" });
-  workerNameMap[code.toUpperCase()] = name.trim();
+  workerNameMap[String(code).toUpperCase()] = String(name).trim();
   res.json({ ok: true });
 });
 
-// GET SCANS: nombre de variedad desde tabla 'variedades'
+// Traer escaneos recientes (con nombre de variedad por JOIN)
 app.get("/api/scans", async (req, res) => {
   try {
-    const limit = req.query.limit || 200;
+    const limit = parseInt(req.query.limit, 10) || 200;
     const query = `
       SELECT 
         s.ts, 
@@ -72,20 +96,21 @@ app.get("/api/scans", async (req, res) => {
 
     res.json(finalData);
   } catch (err) {
-    console.error(err);
+    console.error("GET /api/scans error:", err);
     res.status(500).json({ error: "Error en DB" });
   }
 });
 
+// Pendientes (si aún no llevas estado de pendientes, devolvemos vacío)
 app.get("/api/pendingAll", (req, res) => {
   res.json({});
 });
 
-/* ============================
-    LÓGICA DE ESCANEO (Bxx-Tyy & Vxx-gg)
-============================ */
+/* ==========================================================
+   LÓGICA DE PARSEOS (NUEVOS FORMATOS)
+   ========================================================== */
 
-// Bonchador: B16-T20 (B=bonchador, T=tallos)
+// Bonchador: B16-T20  (B=bonchador; T=tallos)
 function parseWorker(code) {
   const up = String(code || "").trim().toUpperCase();
   const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
@@ -98,13 +123,13 @@ function parseWorker(code) {
   if (!Number.isFinite(tallos) || tallos <= 0) return null;
 
   return {
-    code: `B${n}`,   // para DB/estadísticas y nombres (ej: "B16")
-    tallos,          // proviene del bonchador
-    raw: up          // el crudo escaneado (ej: "B16-T20")
+    code: `B${n}`,   // Para DB y mostrar (ej: "B16")
+    tallos,          // Tallos declarados en el bonchador
+    raw: up          // Escaneo crudo (ej: "B16-T20")
   };
 }
 
-// Producto: V01-60 (variedad + grado; SIN tallos)
+// Producto: V01-60  (variedad y grado; SIN tallos)
 function parseProduct(code) {
   const up = String(code || "").trim().toUpperCase();
   const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);
@@ -121,18 +146,25 @@ function parseProduct(code) {
   };
 }
 
+// Recibir combinación (dos pasos en cualquier orden desde el front)
 app.post("/api/scan", async (req, res) => {
   try {
-    const { barcode, worker } = req.body;
+    const { barcode, worker } = req.body || {};
     const wObj = parseWorker(worker);
     const pObj = parseProduct(barcode);
 
     if (wObj && pObj) {
       const savedReg = await saveScan(wObj, pObj);
 
-      // Nombre de la variedad para SSE
-      const varRes = await pool.query("SELECT nombre FROM variedades WHERE id = $1", [pObj.variedad_id]);
-      const varNombre = varRes.rows[0] ? varRes.rows[0].nombre : pObj.variedad_id;
+      // Traemos el nombre de la variedad para emitirlo por SSE
+      let varNombre = pObj.variedad_id;
+      try {
+        const varRes = await pool.query(
+          "SELECT nombre FROM variedades WHERE id = $1",
+          [pObj.variedad_id]
+        );
+        if (varRes.rows[0]) varNombre = varRes.rows[0].nombre || pObj.variedad_id;
+      } catch {}
 
       const broadcastData = {
         ...savedReg,
@@ -143,13 +175,15 @@ app.post("/api/scan", async (req, res) => {
       broadcast({ kind: "scan", reg: broadcastData });
       return res.json({ ok: true });
     }
-    res.status(400).json({ error: "Datos inválidos" });
+
+    return res.status(400).json({ error: "Datos inválidos" });
   } catch (err) {
-    console.error(err);
+    console.error("POST /api/scan error:", err);
     res.status(500).json({ error: "Error interno" });
   }
 });
 
+// Guardar registro en DB
 async function saveScan(wObj, pObj) {
   const client = await pool.connect();
   try {
@@ -161,12 +195,12 @@ async function saveScan(wObj, pObj) {
     `;
     const values = [
       localTimestamp,
-      wObj.code,          // guardamos "B16"
-      wObj.tallos,        // tallos vienen del bonchador
-      pObj.variedad_id,
-      pObj.grado_cm,
-      wObj.raw,           // raw_a = bonchador crudo (B16-T20)
-      pObj.raw            // raw_b = producto crudo (V01-60)
+      wObj.code,          // "B16"
+      wObj.tallos,        // tallos desde bonchador
+      pObj.variedad_id,   // "V01"
+      pObj.grado_cm,      // 60
+      wObj.raw,           // raw_a: "B16-T20"
+      pObj.raw            // raw_b: "V01-60"
     ];
     const result = await client.query(query, values);
     return result.rows[0];
@@ -174,6 +208,10 @@ async function saveScan(wObj, pObj) {
     client.release();
   }
 }
+
+/* ==========================================================
+   SSE (Server-Sent Events) en /api/stream
+   ========================================================== */
 
 function broadcast(data) {
   const msg = `data: ${JSON.stringify(data)}\n\n`;
@@ -185,9 +223,41 @@ app.get("/api/stream", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
+
+  // Mantener conexión
   clients.add(res);
-  req.on("close", () => clients.delete(res));
+
+  // Si quieres enviar un "snapshot" al conectar, puedes hacerlo aquí (opcional):
+  // (descomenta si implementas snapshot de scans/pending)
+//   (async () => {
+//     try {
+//       const r = await pool.query(`
+//         SELECT s.ts, s.worker, s.tallos, s.variedad_id, s.grado_cm,
+//                COALESCE(v.nombre, s.variedad_id) AS variedad_nombre
+//         FROM scans s
+//         LEFT JOIN variedades v ON s.variedad_id = v.id
+//         ORDER BY s.ts DESC
+//         LIMIT 200
+//       `);
+//       const snapshot = r.rows.map(row => ({
+//         ...row,
+//         worker_name: workerNameMap[row.worker] || row.worker
+//       }));
+//       res.write(`data: ${JSON.stringify({ kind: "snapshot", snapshot, pending: {}, workers: Object.keys(workerNameMap).map(code => ({ code, name: workerNameMap[code] })) })}\n\n`);
+//     } catch (e) {}
+//   })();
+
+  req.on("close", () => {
+    clients.delete(res);
+    try { res.end(); } catch {}
+  });
 });
 
+/* ==========================================================
+   ARRANQUE DEL SERVIDOR
+   ========================================================== */
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT} (Formatos: Bxx-Tyy y Vxx-gg)`));
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor en puerto ${PORT} (Formatos: Bxx-Tyy y Vxx-gg)`);
+});
