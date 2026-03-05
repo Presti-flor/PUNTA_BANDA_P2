@@ -342,7 +342,7 @@
     }
   }
 
-  // -------- Canvas HiDPI (igual) --------
+  // -------- Canvas HiDPI --------
   let ctx = null;
   let cssW = 0, cssH = 0;
   let resizeObserver = null;
@@ -585,11 +585,7 @@
       ctx.textAlign = "left";
       ctx.fillText(`Rendimiento por bonchador (${winLabel})${onlyActive ? " — Solo activos" : ""}`, padL, padT);
 
-      const counts = countsByWorker();
-      const stems  = stemsByWorkerFiltered();
-      const displayWorkers = (activeSel.value === "active") ? getActiveWorkers(counts) : getDisplayWorkers(counts);
-
-      drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, computeNiceMax(Math.max(1, ...displayWorkers.map(w => counts[w] || 0))));
+      drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, computeNiceMax( Math.max(1, ...displayWorkers.map(w => (counts[w]||0)) ) ));
       renderAt(p);
 
       if (t < 1){
@@ -635,8 +631,69 @@
   });
   chart.addEventListener('mouseleave', hideTip);
 
+  /* ==================================================
+     AGRUPACIONES PARA EL DETALLE POR TARJETA (NUEVO)
+     ================================================== */
+
+  // Filtra los scans por la ventana activa (hora / hoy)
+  function scansInWindow() {
+    return scans.filter(r => windowFilter(r.ts));
+  }
+
+  // worker -> { totalRamos, totalTallos, variedades: { [varKey]: { nombre, ramos, tallos, grados: { [grado]: { ramos, tallos } } } } }
+  function breakdownByWorker() {
+    const byW = {};
+    const rows = scansInWindow();
+
+    for (const r of rows) {
+      const w = String(r.worker || "").trim().toUpperCase();
+      if (!workers.includes(w)) continue;
+
+      const varNombre = r.variedad_nombre || r.variedad_id || "—";
+      const grado = (r.grado_cm != null) ? String(r.grado_cm) : "—";
+      const tallos = Number(r.tallos) || 0;
+
+      if (!byW[w]) {
+        byW[w] = {
+          totalRamos: 0,
+          totalTallos: 0,
+          variedades: {}
+        };
+      }
+      const itW = byW[w];
+      itW.totalRamos += 1;
+      itW.totalTallos += tallos;
+
+      // Para agrupar por variedad SOLA, usamos varNombre como key.
+      // Si prefieres variedad+grado, usa: const key = `${varNombre} · ${grado}`;
+      const key = varNombre;
+
+      if (!itW.variedades[key]) {
+        itW.variedades[key] = { nombre: varNombre, ramos: 0, tallos: 0, grados: {} };
+      }
+      const itV = itW.variedades[key];
+      itV.ramos += 1;
+      itV.tallos += tallos;
+
+      // Desglose por grado (dejar preparado por si lo quieres mostrar)
+      if (!itV.grados[grado]) itV.grados[grado] = { ramos: 0, tallos: 0 };
+      itV.grados[grado].ramos += 1;
+      itV.grados[grado].tallos += tallos;
+    }
+
+    return byW;
+  }
+
+  function sortVarieties(vMap, criterio = "ramos") {
+    const arr = Object.entries(vMap).map(([k, v]) => ({ key: k, ...v }));
+    arr.sort((a, b) => (b[criterio] || 0) - (a[criterio] || 0));
+    return arr;
+  }
+
+  // RENDER de tarjetas con detalle
   function renderWorkerCards(displayWorkers, counts, stems) {
     const hrs = hoursInWindow();
+    const byW = breakdownByWorker();
     workerCards.innerHTML = "";
 
     for (const w of displayWorkers) {
@@ -644,8 +701,61 @@
       const ramos = counts[w] || 0;
       const tallos = stems[w] || 0;
 
-      const rph = ramos / hrs;
-      const tph = tallos / hrs;
+      const rph = hrs > 0 ? (ramos / hrs) : 0;
+      const tph = hrs > 0 ? (tallos / hrs) : 0;
+
+      const wData = byW[w] || { totalRamos: 0, totalTallos: 0, variedades: {} };
+      const varArr = sortVarieties(wData.variedades, "ramos");
+
+      const topN = 3;
+      const top = varArr.slice(0, topN);
+      const rest = varArr.slice(topN);
+
+      const makeVarietyRow = (v) => {
+        // Desglose por grado (opcional): quita los comentarios si lo quieres visible
+        const grados = Object.entries(v.grados || {});
+        const gradosSorted = grados.sort((a,b)=> (b[1].ramos||0) - (a[1].ramos||0));
+        const gradosHtml = gradosSorted.map(([g, gvals]) =>
+          `<div class="subPill" title="Grado ${g}">
+             <b>${gvals.ramos}</b> r · <b>${gvals.tallos}</b> t (gr ${g})
+           </div>`
+        ).join("");
+
+        return `
+          <div class="subRow" style="margin-top:6px;">
+            <span class="subPill"><b>${v.nombre}</b></span>
+            <span class="subPill"><b>${v.ramos}</b> ramos</span>
+            <span class="subPill"><b>${v.tallos}</b> tallos</span>
+          </div>
+          <!-- Desglose por grado (opcional): descomenta para mostrar
+          <div class="subRow" style="margin-top:4px;">
+            ${gradosHtml}
+          </div>
+          -->
+        `;
+      };
+
+      const detailsId = `detail-${w}`;
+      const detailHtml = varArr.length ? `
+        <div style="margin-top:10px;border-top:1px dashed rgba(31,51,88,.6);padding-top:8px;">
+          <div class="hint" style="margin-bottom:6px;">Detalle por variedad</div>
+          ${top.map(makeVarietyRow).join("")}
+          ${rest.length ? `
+            <div id="${detailsId}" style="display:none;">
+              ${rest.map(makeVarietyRow).join("")}
+            </div>
+            <button class="ghost" style="margin-top:6px;" onclick="
+              (function(){
+                const el=document.getElementById('${detailsId}');
+                const btn=this;
+                const show=el.style.display==='none';
+                el.style.display = show ? 'block' : 'none';
+                btn.textContent = show ? 'ver menos' : 'ver todo';
+              }).call(this)
+            ">ver todo</button>
+          ` : ""}
+        </div>
+      ` : "";
 
       const div = document.createElement("div");
       div.className = "kpiCard" + (ramos > 0 ? " active" : "");
@@ -666,6 +776,8 @@
           <span class="subPill"><b>${rph.toFixed(1)}</b> ramos/h</span>
           <span class="subPill"><b>${tph.toFixed(1)}</b> tallos/h</span>
         </div>
+
+        ${detailHtml}
       `;
       workerCards.appendChild(div);
     }
@@ -793,10 +905,7 @@
     renderAll();
   }
 
-  // ==========================
-  // NUEVOS FORMATOS DE CÓDIGO
-  // ==========================
-  // Bonchador + tallos: B16-T20
+  // ============== ESCÁNER (Bxx-Tyy y Vxx-gg) ==============
   function parseBonchador(code) {
     const up = String(code||"").trim().toUpperCase();
     const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
@@ -808,7 +917,6 @@
     return { raw: up, code: "B" + n, tallos: t };
   }
 
-  // Código V (variedad + grado): V01-60
   function parseV(code) {
     const up = String(code||"").trim().toUpperCase();
     const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);
@@ -848,7 +956,6 @@
     return { ok: res.ok, data };
   }
 
-  // POSTSCAN: dos escaneos, cualquier orden
   async function postScan(rawCode) {
     const { up, isB, isV, b, v } = detectBarcodeType(rawCode);
     lastScanEl.textContent = up;
@@ -858,12 +965,10 @@
       return;
     }
 
-    // Escaneo BONCHADOR-TALLOS
     if (isB) {
       pendingWorker = b; // { raw, code, tallos }
       setLastWorkerUI(pendingWorker.raw);
 
-      // si ya está el V pendiente, enviamos
       if (pendingV && pendingWorker) {
         const out = await sendToServer({
           worker: pendingWorker.raw,  // "B16-T20"
@@ -881,7 +986,6 @@
       return;
     }
 
-    // Escaneo Vxx-gg
     if (isV) {
       pendingV = v; // { raw, variedad, grado }
       setLastVUI(pendingV.raw);

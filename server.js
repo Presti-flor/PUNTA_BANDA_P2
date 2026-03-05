@@ -23,6 +23,7 @@ const clients = new Set();
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
+  // Si tu archivo se llama vista.html, cámbialo aquí.
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
@@ -46,7 +47,7 @@ app.post("/api/workers", (req, res) => {
   res.json({ ok: true });
 });
 
-// GET SCANS: trae el nombre desde 'variedades' con LEFT JOIN
+// GET SCANS: nombre de variedad desde tabla 'variedades'
 app.get("/api/scans", async (req, res) => {
   try {
     const limit = req.query.limit || 200;
@@ -161,7 +162,7 @@ async function saveScan(wObj, pObj) {
     `;
     const values = [
       localTimestamp,
-      wObj.code,          // guardamos "B16" (no con T)
+      wObj.code,          // guardamos "B16"
       wObj.tallos,        // tallos vienen del bonchador
       pObj.variedad_id,
       pObj.grado_cm,
