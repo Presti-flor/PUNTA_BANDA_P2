@@ -227,25 +227,6 @@ app.get("/api/stream", (req, res) => {
   // Mantener conexión
   clients.add(res);
 
-  // Si quieres enviar un "snapshot" al conectar, puedes hacerlo aquí (opcional):
-  // (descomenta si implementas snapshot de scans/pending)
-//   (async () => {
-//     try {
-//       const r = await pool.query(`
-//         SELECT s.ts, s.worker, s.tallos, s.variedad_id, s.grado_cm,
-//                COALESCE(v.nombre, s.variedad_id) AS variedad_nombre
-//         FROM scans s
-//         LEFT JOIN variedades v ON s.variedad_id = v.id
-//         ORDER BY s.ts DESC
-//         LIMIT 200
-//       `);
-//       const snapshot = r.rows.map(row => ({
-//         ...row,
-//         worker_name: workerNameMap[row.worker] || row.worker
-//       }));
-//       res.write(`data: ${JSON.stringify({ kind: "snapshot", snapshot, pending: {}, workers: Object.keys(workerNameMap).map(code => ({ code, name: workerNameMap[code] })) })}\n\n`);
-//     } catch (e) {}
-//   })();
 
   req.on("close", () => {
     clients.delete(res);
