@@ -508,38 +508,26 @@
   }
 
   function drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, maxV){
-    const baseY = H - padB;
-    const usableH = H - padT - padB - 35;
+  const baseY = H - padB;
+  const usableH = H - padT - padB - 35;
 
-    ctx.strokeStyle = "rgba(31,51,88,1)";
+  const niceMax = computeNiceMax(maxV);
+  const ticks = 5;
+  const step = niceMax / ticks;
+
+  // Líneas horizontales suaves (grilla)
+  for (let i = 1; i <= ticks; i++) {
+    const v = i * step;
+    const y = baseY - (v / niceMax) * usableH;
+    ctx.strokeStyle = "rgba(31,51,88,.45)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(padL, crisp(baseY));
-    ctx.lineTo(W - padR, crisp(baseY));
+    ctx.moveTo(padL, crisp(y));
+    ctx.lineTo(W - padR, crisp(y));
     ctx.stroke();
-
-    const niceMax = computeNiceMax(maxV);
-    const ticks = 5;
-    const step = niceMax / ticks;
-    ctx.textAlign = "right";
-    ctx.textBaseline = "middle";
-    ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-
-    for (let i=1;i<=ticks;i++){
-      const v = i*step;
-      const y = baseY - (v / niceMax) * usableH;
-
-      ctx.strokeStyle = "rgba(31,51,88,.45)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(padL, crisp(y));
-      ctx.lineTo(W - padR, crisp(y));
-      ctx.stroke();
-
-      ctx.fillStyle = "rgba(200,220,255,.75)";
-      ctx.fillText(String(Math.round(v)), padL - 6, y);
-    }
   }
+  // No dibujamos números ni línea base aquí.
+}
 
   function getGradient(ctx, x, y, w, h, hex){
     const g = ctx.createLinearGradient(0, y, 0, y+h);
@@ -669,9 +657,6 @@
           ctx.fillText(line2, cx, y + (h/2) + 12);
         }
 
-        ctx.fillStyle = "rgba(200,220,255,0.95)";
-        ctx.font = "800 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-        ctx.fillText(name, cx, baseY + 16);
 
         barRects.push({x, y, w: barW, h, worker: w, ramos: r, tallos: t, cx});
       }
