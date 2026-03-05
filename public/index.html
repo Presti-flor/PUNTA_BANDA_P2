@@ -172,16 +172,16 @@
           Bonchador pendiente: <span id="lastWorkerForV" class="mono warnTxt">—</span><br>
           Código V pendiente: <span id="lastVPending" class="mono warnTxt">—</span><br><br>
 
-          Código 1 (bonchador): <span class="mono">B16</span> (B16 a B25)<br>
-          Código 2 (todo en uno): <span class="mono">V01-60-25</span><br>
+          Código 1 (bonchador + tallos): <span class="mono">B16-T20</span> (B16 a B25, tallos 1–999)<br>
+          Código 2 (variedad + grado): <span class="mono">V01-60</span><br>
           • V01 = variedad<br>
           • 60 = grado<br>
-          • 25 = tallos<br><br>
+          • Los <b>tallos van en el bonchador</b><br><br>
           Se puede escanear en cualquier orden (B→V o V→B).
         </div>
 
         <label style="margin-top:10px;">Entrada manual (teclado)</label>
-        <input id="manualScan" class="mono" placeholder="Ej: B16  ó  V01-60-25  (Enter)" />
+        <input id="manualScan" class="mono" placeholder="Ej: B16-T20  ó  V01-60  (Enter)" />
 
         <div class="hint" style="margin-top:8px;">
           Último envío: <span id="lastScan" class="mono warnTxt">—</span>
@@ -238,19 +238,16 @@
 
   let captureEnabled = false;
 
-  // Si tu API /api/workers devuelve códigos, se cargan de allá.
-  // Si no, esto funciona como fallback.
   let workers = ["B16","B17","B18","B19","B20","B21","B22","B23","B24","B25"];
-  let workerNameMap = {}; // "B16" -> nombre
+  let workerNameMap = {};
   let scans = [];
   let pendingAll = {};
   let es = null;
 
-  // “cualquier orden”
-  let pendingWorker = null; // "B16"
-  let pendingV = null;      // "V01-60-25"
+  // Pendientes para “cualquier orden”
+  let pendingWorker = null; // { raw:'B16-T20', code:'B16', tallos:20 }
+  let pendingV = null;      // { raw:'V01-60', variedad:'V01', grado:60 }
 
-  // Paleta colores
   const palette = ["#f3ff05","#16A34A","#F97316","#DC2626","#fc9df8","#a8e5f7","#EAB308","#059e8d","#6b8a7f","#18fa0c"];
   const workerColors = {};
   workers.forEach((w, i) => workerColors[w] = palette[i % palette.length]);
@@ -345,7 +342,7 @@
     }
   }
 
-  // -------- Canvas HiDPI --------
+  // -------- Canvas HiDPI (igual) --------
   let ctx = null;
   let cssW = 0, cssH = 0;
   let resizeObserver = null;
@@ -571,16 +568,28 @@
       const t = Math.min(1, (now - animState.start) / 650);
       const p = easeOutCubic(t);
 
+      const W = cssW, H = cssH;
       ctx.clearRect(0,0,W,H);
+      const bg = ctx.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, "rgba(11,18,32,0.55)");
+      bg.addColorStop(1, "rgba(11,18,32,0.20)");
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
+
+      const padL = 44, padR = 24, padT = 36, padB = 48;
+      const winLabel = windowSel.value === "hour" ? "Última hora" : "Total hoy";
+      const onlyActive = (activeSel.value === "active");
 
       ctx.fillStyle = "white";
       ctx.font = "700 14px system-ui, -apple-system, Segoe UI, Roboto, Arial";
       ctx.textAlign = "left";
       ctx.fillText(`Rendimiento por bonchador (${winLabel})${onlyActive ? " — Solo activos" : ""}`, padL, padT);
 
-      drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, niceMax);
+      const counts = countsByWorker();
+      const stems  = stemsByWorkerFiltered();
+      const displayWorkers = (activeSel.value === "active") ? getActiveWorkers(counts) : getDisplayWorkers(counts);
+
+      drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, computeNiceMax(Math.max(1, ...displayWorkers.map(w => counts[w] || 0))));
       renderAt(p);
 
       if (t < 1){
@@ -674,7 +683,6 @@
     pendingBox.textContent = lines.join("\n");
   }
 
-  // IMPORTANTE: para que sí puedas editar nombres, NO re-renderizamos namesBox en cada renderAll.
   function renderNamesEditorOnce() {
     namesBox.innerHTML = "";
     for (const w of workers) {
@@ -693,57 +701,54 @@
     let successCount = 0;
 
     for (const inp of inputs) {
-        const code = inp.dataset.worker;
-        const name = (inp.value || "").trim();
-        
-        // Si el nombre está vacío, no lo enviamos
-        if (!name) continue;
+      const code = inp.dataset.worker;
+      const name = (inp.value || "").trim();
+      if (!name) continue;
 
-        try {
-            const res = await fetch(`${API}/api/workers`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ code, name })
-            });
+      try {
+        const res = await fetch(`${API}/api/workers`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, name })
+        });
 
-            if (res.ok) {
-                successCount++;
-            } else {
-                console.error(`Error al guardar bonchador ${code}`);
-            }
-        } catch (err) {
-            console.error(`Error de red para ${code}:`, err);
+        if (res.ok) {
+          successCount++;
+        } else {
+          console.error(`Error al guardar bonchador ${code}`);
         }
+      } catch (err) {
+        console.error(`Error de red para ${code}:`, err);
+      }
     }
 
     if (successCount > 0) {
-        alert(`Se actualizaron ${successCount} nombres correctamente.`);
-        // Recargamos los datos desde el servidor para que se vean en las gráficas y tablas
-        await loadWorkers();
-        await refreshAll();
+      alert(`Se actualizaron ${successCount} nombres correctamente.`);
+      await loadWorkers();
+      await refreshAll();
     } else {
-        alert("No se realizaron cambios o hubo un error al conectar.");
+      alert("No se realizaron cambios o hubo un error al conectar.");
     }
-}
+  }
 
   function renderTable() {
-  tb.innerHTML = "";
-  for (const r of scans.slice(0, 150)) {
-    const name = r.worker_name || workerNameMap[String(r.worker||"").trim()] || "";
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="mono">${fmtTime(r.ts)}</td>
-      <td><span class="pill">${r.worker || ""}</span></td>
-      <td>${name}</td>
-      <td class="mono">${r.seq || ""}</td>
-      <td>${r.tallos ?? ""}</td>
-      <td><span class="pill mono">${r.variedad_nombre ?? "—"}</span></td>
-      <td>${r.grado_cm || r.grado_cm || r.grado_cm || ""}</td>
-    `;
-    tb.appendChild(tr);
+    tb.innerHTML = "";
+    for (const r of scans.slice(0, 150)) {
+      const name = r.worker_name || workerNameMap[String(r.worker||"").trim()] || "";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="mono">${fmtTime(r.ts)}</td>
+        <td><span class="pill">${r.worker || ""}</span></td>
+        <td>${name}</td>
+        <td class="mono">${r.seq || ""}</td>
+        <td>${r.tallos ?? ""}</td>
+        <td><span class="pill mono">${r.variedad_nombre ?? "—"}</span></td>
+        <td>${r.grado_cm || ""}</td>
+      `;
+      tb.appendChild(tr);
+    }
+    countInfo.textContent = `${scans.length} registros`;
   }
-  countInfo.textContent = `${scans.length} registros`;
-}
 
   function renderAll() {
     const counts = countsByWorker();
@@ -760,10 +765,8 @@
   }
 
   async function loadWorkers() {
-    // Si tu API no tiene /api/workers aún, deja el fallback.
     const res = await fetch(API + "/api/workers", {cache:"no-store"}).catch(()=>null);
     if (!res || !res.ok) {
-      // fallback con lista fija
       workerNameMap = workerNameMap || {};
       workers.forEach((w,i)=> workerColors[w] = workerColors[w] || palette[i % palette.length]);
       renderNamesEditorOnce();
@@ -793,29 +796,27 @@
   // ==========================
   // NUEVOS FORMATOS DE CÓDIGO
   // ==========================
-  // Bonchador: B16 ... B25
+  // Bonchador + tallos: B16-T20
   function parseBonchador(code) {
     const up = String(code||"").trim().toUpperCase();
-    const m = up.match(/^B(\d{2})$/);
+    const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
     if (!m) return null;
     const n = parseInt(m[1],10);
+    const t = parseInt(m[2],10);
     if (n < 16 || n > 25) return null;
-    return "B" + n;
+    if (!Number.isFinite(t) || t <= 0) return null;
+    return { raw: up, code: "B" + n, tallos: t };
   }
 
-  // Código V: V01-60-25
-  // Variedad: 01..99 (ajusta si necesitas 01..60)
-  // Grado: 00..99 (ej 60)
-  // Tallos: 1..999 (aquí permitimos 1-3 dígitos)
+  // Código V (variedad + grado): V01-60
   function parseV(code) {
     const up = String(code||"").trim().toUpperCase();
-    const m = up.match(/^V(\d{2})-(\d{2})-(\d{1,3})$/);
+    const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);
     if (!m) return null;
     const variedad = "V" + m[1];
     const grado = parseInt(m[2],10);
-    const tallos = parseInt(m[3],10);
-    if (!Number.isFinite(grado) || !Number.isFinite(tallos) || tallos <= 0) return null;
-    return { raw: up, variedad, grado, tallos };
+    if (!Number.isFinite(grado)) return null;
+    return { raw: up, variedad, grado };
   }
 
   function detectBarcodeType(code) {
@@ -825,14 +826,14 @@
     return { up, isB: !!b, isV: !!v, b, v };
   }
 
-  function setLastWorkerUI(worker) {
+  function setLastWorkerUI(txt) {
     if (!lastWorkerEl) return;
-    if (worker) { lastWorkerEl.textContent = worker; lastWorkerEl.className = "mono okTxt"; }
+    if (txt) { lastWorkerEl.textContent = txt; lastWorkerEl.className = "mono okTxt"; }
     else { lastWorkerEl.textContent = "—"; lastWorkerEl.className = "mono warnTxt"; }
   }
-  function setLastVUI(v) {
+  function setLastVUI(txt) {
     if (!lastVEl) return;
-    if (v) { lastVEl.textContent = v; lastVEl.className = "mono okTxt"; }
+    if (txt) { lastVEl.textContent = txt; lastVEl.className = "mono okTxt"; }
     else { lastVEl.textContent = "—"; lastVEl.className = "mono warnTxt"; }
   }
 
@@ -857,43 +858,40 @@
       return;
     }
 
-    // Escaneo BONCHADOR
+    // Escaneo BONCHADOR-TALLOS
     if (isB) {
-      pendingWorker = b;
-      setLastWorkerUI(pendingWorker);
+      pendingWorker = b; // { raw, code, tallos }
+      setLastWorkerUI(pendingWorker.raw);
 
       // si ya está el V pendiente, enviamos
       if (pendingV && pendingWorker) {
         const out = await sendToServer({
-          worker: pendingWorker,
-          barcode: pendingV
+          worker: pendingWorker.raw,  // "B16-T20"
+          barcode: pendingV.raw       // "V01-60"
         });
-        if (!out.ok) { lastScanEl.textContent = pendingV + " (ERROR)"; return; }
+        if (!out.ok) { lastScanEl.textContent = pendingWorker.raw + " / " + pendingV.raw + " (ERROR)"; return; }
 
-        // limpia pendientes
         pendingV = null;
         pendingWorker = null;
         setLastVUI(null);
         setLastWorkerUI(null);
 
-        // fuerza refresco inmediato (aunque SSE exista)
         await refreshAll();
       }
       return;
     }
 
-    // Escaneo Vxx-gg-tt
+    // Escaneo Vxx-gg
     if (isV) {
-      pendingV = v.raw;
-      setLastVUI(pendingV);
+      pendingV = v; // { raw, variedad, grado }
+      setLastVUI(pendingV.raw);
 
-      // si ya tenemos bonchador, enviamos
       if (pendingWorker && pendingV) {
         const out = await sendToServer({
-          worker: pendingWorker,
-          barcode: pendingV
+          worker: pendingWorker.raw,  // "B16-T20"
+          barcode: pendingV.raw       // "V01-60"
         });
-        if (!out.ok) { lastScanEl.textContent = pendingV + " (ERROR)"; return; }
+        if (!out.ok) { lastScanEl.textContent = pendingWorker.raw + " / " + pendingV.raw + " (ERROR)"; return; }
 
         pendingV = null;
         pendingWorker = null;
@@ -940,7 +938,6 @@
   function startPollingFallback() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
-      // si SSE se cae o no llega el evento scan, igual te actualiza
       await refreshAll();
     }, 8000);
   }
@@ -988,7 +985,6 @@
           return;
         }
 
-        // Si tu backend emite esto en tiempo real, con esto se actualiza “al instante”
         if (msg.kind === "scan" && msg.reg) {
           scans.unshift(msg.reg);
           renderAll();
@@ -998,7 +994,6 @@
     };
 
     es.onerror = () => {
-      // OJO: mantenemos polling para no quedarte “pegado” sin updates
       setStatus(true, "Conectado", "SSE falló → usando polling");
       startPollingFallback();
     };

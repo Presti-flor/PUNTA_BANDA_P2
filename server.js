@@ -3,41 +3,23 @@ const cors = require("cors");
 const { Pool } = require("pg");
 const path = require("path");
 
+// FORZAR ZONA HORARIA COLOMBIA
+process.env.TZ = "America/Bogota";
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-/* ============================
-    CONFIGURACIÓN DE BASE DE DATOS
-============================ */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
-/* ============================
-    ESTADO EN MEMORIA
-============================ */
 const WORKER_MIN = 16;
 const WORKER_MAX = 25;
-
-function generateWorkers() {
-  const arr = [];
-  for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
-    arr.push(`B${i}`);
-  }
-  return arr;
-}
-
-let workers = generateWorkers();
-let workerNameMap = {}; // Guarda los nombres asignados: {"B16": "Juan"}
-let pendingAByWorker = {}; 
-let globalPendingB = null; 
+let workerNameMap = {};
 const clients = new Set();
 
-/* ============================
-    SERVIR FRONTEND
-============================ */
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
@@ -45,169 +27,167 @@ app.get("/", (req, res) => {
 });
 
 /* ============================
-    RUTAS DE TRABAJADORES (API)
+    RUTAS DE API
 ============================ */
 
-// Obtener lista de trabajadores con sus nombres actuales
 app.get("/api/workers", (req, res) => {
-  res.json(workers.map((w) => ({ 
-    code: w, 
-    name: workerNameMap[w] || w 
-  })));
+  const workers = [];
+  for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
+    const code = `B${i}`;
+    workers.push({ code, name: workerNameMap[code] || code });
+  }
+  res.json(workers);
 });
 
-// Actualizar nombres de los trabajadores
 app.post("/api/workers", (req, res) => {
   const { code, name } = req.body;
-  if (!code || !name) {
-    return res.status(400).json({ error: "Código y nombre requeridos" });
-  }
-  const upCode = code.trim().toUpperCase();
-  workerNameMap[upCode] = name.trim();
-  console.log(`Nombre actualizado: ${upCode} -> ${name}`);
+  if (!code || !name) return res.status(400).json({ error: "Faltan datos" });
+  workerNameMap[code.toUpperCase()] = name.trim();
   res.json({ ok: true });
 });
 
-/* ============================
-    SISTEMA DE ESCANEO Y SSE
-============================ */
+// GET SCANS: trae el nombre desde 'variedades' con LEFT JOIN
+app.get("/api/scans", async (req, res) => {
+  try {
+    const limit = req.query.limit || 200;
+    const query = `
+      SELECT 
+        s.ts, 
+        s.worker, 
+        s.tallos, 
+        s.variedad_id, 
+        s.grado_cm,
+        COALESCE(v.nombre, s.variedad_id) AS variedad_nombre
+      FROM scans s
+      LEFT JOIN variedades v ON s.variedad_id = v.id
+      ORDER BY s.ts DESC 
+      LIMIT $1
+    `;
+    const result = await pool.query(query, [limit]);
 
-function broadcast(data) {
-  const msg = `data: ${JSON.stringify(data)}\n\n`;
-  for (const res of clients) {
-    res.write(msg);
+    const finalData = result.rows.map(row => ({
+      ...row,
+      worker_name: workerNameMap[row.worker] || row.worker
+    }));
+
+    res.json(finalData);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Error en DB" });
   }
-}
+});
 
-app.get("/api/stream", async (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
-
-  clients.add(res);
-
-  const scans = await getScans(200);
-  const pending = await getPendingAll();
-
-  res.write(`data: ${JSON.stringify({
-    kind: "snapshot",
-    snapshot: scans,
-    pending,
-    workers: workers.map((w) => ({ code: w, name: workerNameMap[w] || w })),
-  })}\n\n`);
-
-  const pingInterval = setInterval(() => res.write("data: ping\n\n"), 20000);
-
-  req.on("close", () => {
-    clients.delete(res);
-    clearInterval(pingInterval);
-  });
+app.get("/api/pendingAll", (req, res) => {
+  res.json({});
 });
 
 /* ============================
-    LÓGICA DE ESCANEO
+    LÓGICA DE ESCANEO (NUEVOS FORMATOS)
 ============================ */
 
-// Parsear código de trabajador (B16-T20)
+// Bonchador ahora: B16-T20  (B=bonchador; T=tallos)
 function parseWorker(code) {
-  const m = code.match(/^B(\d{2})-T(\d+)$/);  // Buscar BXX-TXX
+  const up = String(code || "").trim().toUpperCase();
+  const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
   if (!m) return null;
-  const workerCode = `B${m[1]}`;
-  const tallos = parseInt(m[2], 10);  // Número de tallos
-  return { workerCode, tallos };  // Retornar código de trabajador y tallos
+
+  const n = parseInt(m[1], 10);
+  const tallos = parseInt(m[2], 10);
+
+  if (!(n >= WORKER_MIN && n <= WORKER_MAX)) return null;
+  if (!Number.isFinite(tallos) || tallos <= 0) return null;
+
+  return {
+    code: `B${n}`,   // para DB/estadísticas y nombres (ej: "B16")
+    tallos,          // proviene del bonchador
+    raw: up          // el crudo escaneado (ej: "B16-T20")
+  };
 }
 
-// Parsear código de producto (V01-60)
+// Producto ahora: V01-60  (variedad y grado; SIN tallos)
 function parseProduct(code) {
-  const m = code.match(/^V(\d{2})-(\d{2})$/);  // Buscar VXX-XX
+  const up = String(code || "").trim().toUpperCase();
+  const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);
   if (!m) return null;
+
+  const variedad_id = `V${m[1]}`;
+  const grado_cm = parseInt(m[2], 10);
+  if (!Number.isFinite(grado_cm)) return null;
+
   return {
-    variedad_id: `V${m[1]}`,
-    grado_cm: parseInt(m[2], 10),
-    raw: code,
+    variedad_id,
+    grado_cm,
+    raw: up
   };
 }
 
 app.post("/api/scan", async (req, res) => {
   try {
     const { barcode, worker } = req.body;
-    const code = (barcode || "").trim().toUpperCase();
+    const wObj = parseWorker(worker);
+    const pObj = parseProduct(barcode);
 
-    const workerData = parseWorker(code);
-    const productCode = parseProduct(code);
+    if (wObj && pObj) {
+      const savedReg = await saveScan(wObj, pObj);
 
-    if (workerData) {
-      pendingAByWorker[workerData.workerCode] = workerData.workerCode;
-      if (globalPendingB) {
-        const result = await saveScan(workerData.workerCode, globalPendingB, workerData.tallos);
-        globalPendingB = null;
-        broadcast({ kind: "scan", reg: result });
-      }
+      // Nombre de la variedad para SSE
+      const varRes = await pool.query("SELECT nombre FROM variedades WHERE id = $1", [pObj.variedad_id]);
+      const varNombre = varRes.rows[0] ? varRes.rows[0].nombre : pObj.variedad_id;
+
+      const broadcastData = {
+        ...savedReg,
+        variedad_nombre: varNombre,
+        worker_name: workerNameMap[savedReg.worker] || savedReg.worker
+      };
+
+      broadcast({ kind: "scan", reg: broadcastData });
       return res.json({ ok: true });
     }
-
-    if (productCode) {
-      if (worker) {
-        const w = parseWorker(worker);
-        if (w) {
-          const result = await saveScan(w.workerCode, productCode, w.tallos);
-          broadcast({ kind: "scan", reg: result });
-          return res.json({ ok: true });
-        }
-      }
-      globalPendingB = productCode;
-      return res.json({ ok: true });
-    }
-
-    res.status(400).json({ error: "Código no reconocido" });
+    res.status(400).json({ error: "Datos inválidos" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Error interno" });
   }
 });
 
-/* ============================
-    FUNCIONES DE BASE DE DATOS
-============================ */
-
-async function saveScan(worker, product, tallos) {
+async function saveScan(wObj, pObj) {
   const client = await pool.connect();
   try {
-    const varRes = await client.query("SELECT nombre FROM variedades WHERE id = $1", [product.variedad_id]);
-    const varNombre = varRes.rows[0] ? varRes.rows[0].nombre : product.variedad_id;
-    
-    // Obtenemos el nombre actual del mapa para guardarlo en el registro
-    const wName = workerNameMap[worker] || worker;
-
-    const result = await client.query(
-      `INSERT INTO scans 
-       (ts, worker, worker_name, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [worker, wName, tallos, product.variedad_id, product.grado_cm, worker, product.raw, varNombre]
-    );
+    const localTimestamp = new Date();
+    const query = `
+      INSERT INTO scans (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `;
+    const values = [
+      localTimestamp,
+      wObj.code,          // guardamos "B16" (no con T)
+      wObj.tallos,        // tallos vienen del bonchador
+      pObj.variedad_id,
+      pObj.grado_cm,
+      wObj.raw,           // raw_a = bonchador crudo (B16-T20)
+      pObj.raw            // raw_b = producto crudo (V01-60)
+    ];
+    const result = await client.query(query, values);
     return result.rows[0];
   } finally {
     client.release();
   }
 }
 
-async function getScans(limit) {
-  const result = await pool.query("SELECT * FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
-  return result.rows;
+function broadcast(data) {
+  const msg = `data: ${JSON.stringify(data)}\n\n`;
+  clients.forEach(res => res.write(msg));
 }
 
-async function getPendingAll() {
-  const obj = {};
-  workers.forEach(w => { obj[w] = pendingAByWorker[w] || {}; });
-  return obj;
-}
-
-/* ============================
-    INICIO DEL SERVIDOR
-============================ */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Servidor activo en puerto ${PORT}`);
+app.get("/api/stream", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  clients.add(res);
+  req.on("close", () => clients.delete(res));
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT} (Formatos: Bxx-Tyy y Vxx-gg)`));
