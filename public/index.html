@@ -411,6 +411,102 @@
     return niceMult * base;
   }
 
+  // ===== Ejes y ticks =====
+  function drawAxisY(ctx, padL, padR, padT, padB, W, H, niceMax, ticks = 5, label = "Ramos") {
+    const baseY = H - padB;
+    const usableH = H - padT - padB - 35;
+
+    // Eje Y (vertical)
+    ctx.strokeStyle = "rgba(147,197,253,.55)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(padL, baseY);
+    ctx.lineTo(padL, padT + 10);
+    ctx.stroke();
+
+    // Ticks + números
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillStyle = "rgba(214,230,255,.95)";
+    ctx.strokeStyle = "rgba(147,197,253,.25)";
+
+    const step = niceMax / ticks;
+    for (let i = 0; i <= ticks; i++) {
+      const v = i * step;
+      const y = baseY - (v / niceMax) * usableH;
+
+      // Tick corto sobre el eje
+      ctx.beginPath();
+      ctx.moveTo(padL - 5, Math.round(y) + 0.5);
+      ctx.lineTo(padL,     Math.round(y) + 0.5);
+      ctx.stroke();
+
+      // Etiqueta numérica
+      ctx.fillText(String(Math.round(v)), padL - 8, y);
+    }
+
+    // Rótulo del eje Y (vertical)
+    ctx.save();
+    ctx.translate(padL - 32, padT + (usableH / 2));
+    ctx.rotate(-Math.PI / 2);
+    ctx.font = "700 12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillStyle = "rgba(214,230,255,.85)";
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+
+    // Línea del eje X (base) reforzada
+    ctx.strokeStyle = "rgba(147,197,253,.55)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(padL, baseY + 0.5);
+    ctx.lineTo(W - padR, baseY + 0.5);
+    ctx.stroke();
+  }
+
+  function drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, groupW, label = "Bonchadores") {
+    const baseY = H - padB;
+
+    // Marcas en X (centradas con cada barra) y etiquetas rotadas
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+
+    for (let i = 0; i < displayWorkers.length; i++) {
+      const w = displayWorkers[i];
+      const cx = padL + (i + 0.5) * groupW; // centro de la barra
+
+      // Tick corto
+      ctx.strokeStyle = "rgba(147,197,253,.35)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, baseY);
+      ctx.lineTo(cx, baseY + 6);
+      ctx.stroke();
+
+      // Etiqueta rotada (código + nombre corto)
+      const name = (workerNameMap[w] || "").trim();
+      const shortName = name ? ` · ${name}` : "";
+      const labelTxt = `${w}${shortName}`;
+
+      ctx.save();
+      ctx.translate(cx, baseY + 8);
+      ctx.rotate(-Math.PI / 4); // 45°
+      ctx.fillStyle = "rgba(214,230,255,.9)";
+      ctx.fillText(labelTxt, 0, 0);
+      ctx.restore();
+    }
+
+    // Rótulo del eje X
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.font = "700 12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillStyle = "rgba(214,230,255,.85)";
+    ctx.fillText(label, padL + (W - padL - padR) / 2, H - 8);
+    ctx.restore();
+  }
+
   function drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, maxV){
     const baseY = H - padB;
     const usableH = H - padT - padB - 35;
@@ -471,7 +567,8 @@
     const rawMax = Math.max(1, ...values);
     const niceMax = computeNiceMax(rawMax);
 
-    const padL = 44, padR = 24, padT = 36, padB = 48;
+    // Paddings (padB ↑ para etiquetas del eje X)
+    const padL = 44, padR = 24, padT = 36, padB = 60;
     const baseY = H - padB;
     const usableW = W - padL - padR;
     const usableH = H - padT - padB - 35;
@@ -498,10 +595,16 @@
       return;
     }
 
+    // Grilla base (opcional)
     drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, niceMax);
+
+    // === NUEVO: ejes Y y X ===
+    drawAxisY(ctx, padL, padR, padT, padB, W, H, niceMax, 5, "Ramos");
 
     const groupW = usableW / Math.max(1, displayWorkers.length);
     const barW   = Math.max(22, Math.min(62, groupW - 14));
+    drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, groupW, "Bonchadores");
+
     const radius = Math.min(10, barW/2);
 
     const targetHeights = values.map(v => (v / niceMax) * Math.max(0, usableH));
@@ -586,7 +689,7 @@
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
 
-      const padL = 44, padR = 24, padT = 36, padB = 48;
+      const padL = 44, padR = 24, padT = 36, padB = 60;
       const winLabel = windowSel.value === "hour" ? "Última hora" : "Total hoy";
       const onlyActive = (activeSel.value === "active");
 
@@ -594,6 +697,11 @@
       ctx.font = "700 14px system-ui, -apple-system, Segoe UI, Roboto, Arial";
       ctx.textAlign = "left";
       ctx.fillText(`Rendimiento por bonchador (${winLabel})${onlyActive ? " — Solo activos" : ""}`, padL, padT);
+
+      // Redibuja grilla + ejes para el frame
+      drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, niceMax);
+      drawAxisY(ctx, padL, padR, padT, padB, W, H, niceMax, 5, "Ramos");
+      drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, (W - padL - padR)/Math.max(1, displayWorkers.length), "Bonchadores");
 
       renderAt(p);
 
