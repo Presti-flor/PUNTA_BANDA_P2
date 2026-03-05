@@ -3,23 +3,41 @@ const cors = require("cors");
 const { Pool } = require("pg");
 const path = require("path");
 
-// FORZAR ZONA HORARIA COLOMBIA
-process.env.TZ = "America/Bogota";
-
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+/* ============================
+    CONFIGURACIÓN DE BASE DE DATOS
+============================ */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
+/* ============================
+    ESTADO EN MEMORIA
+============================ */
 const WORKER_MIN = 16;
 const WORKER_MAX = 25;
-let workerNameMap = {}; 
+
+function generateWorkers() {
+  const arr = [];
+  for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
+    arr.push(`B${i}`);
+  }
+  return arr;
+}
+
+let workers = generateWorkers();
+let workerNameMap = {}; // Guarda los nombres asignados: {"B16": "Juan"}
+let pendingAByWorker = {}; 
+let globalPendingB = null; 
 const clients = new Set();
 
+/* ============================
+    SERVIR FRONTEND
+============================ */
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
@@ -27,141 +45,169 @@ app.get("/", (req, res) => {
 });
 
 /* ============================
-    RUTAS DE API
+    RUTAS DE TRABAJADORES (API)
 ============================ */
 
+// Obtener lista de trabajadores con sus nombres actuales
 app.get("/api/workers", (req, res) => {
-  const workers = [];
-  for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
-    const code = `B${i}`;
-    workers.push({ code, name: workerNameMap[code] || code });
-  }
-  res.json(workers);
+  res.json(workers.map((w) => ({ 
+    code: w, 
+    name: workerNameMap[w] || w 
+  })));
 });
 
+// Actualizar nombres de los trabajadores
 app.post("/api/workers", (req, res) => {
   const { code, name } = req.body;
-  if (!code || !name) return res.status(400).json({ error: "Faltan datos" });
-  workerNameMap[code.toUpperCase()] = name.trim();
+  if (!code || !name) {
+    return res.status(400).json({ error: "Código y nombre requeridos" });
+  }
+  const upCode = code.trim().toUpperCase();
+  workerNameMap[upCode] = name.trim();
+  console.log(`Nombre actualizado: ${upCode} -> ${name}`);
   res.json({ ok: true });
 });
 
-// GET SCANS: Ahora trae el nombre desde la tabla 'variedades' usando LEFT JOIN
-app.get("/api/scans", async (req, res) => {
-  try {
-    const limit = req.query.limit || 200;
-    const query = `
-      SELECT 
-        s.ts, 
-        s.worker, 
-        s.tallos, 
-        s.variedad_id, 
-        s.grado_cm,
-        COALESCE(v.nombre, s.variedad_id) AS variedad_nombre
-      FROM scans s
-      LEFT JOIN variedades v ON s.variedad_id = v.id
-      ORDER BY s.ts DESC 
-      LIMIT $1
-    `;
-    const result = await pool.query(query, [limit]);
-    
-    const finalData = result.rows.map(row => ({
-      ...row,
-      worker_name: workerNameMap[row.worker] || row.worker
-    }));
+/* ============================
+    SISTEMA DE ESCANEO Y SSE
+============================ */
 
-    res.json(finalData);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Error en DB" });
+function broadcast(data) {
+  const msg = `data: ${JSON.stringify(data)}\n\n`;
+  for (const res of clients) {
+    res.write(msg);
   }
-});
+}
 
-app.get("/api/pendingAll", (req, res) => {
-  res.json({});
+app.get("/api/stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  clients.add(res);
+
+  const scans = await getScans(200);
+  const pending = await getPendingAll();
+
+  res.write(`data: ${JSON.stringify({
+    kind: "snapshot",
+    snapshot: scans,
+    pending,
+    workers: workers.map((w) => ({ code: w, name: workerNameMap[w] || w })),
+  })}\n\n`);
+
+  const pingInterval = setInterval(() => res.write("data: ping\n\n"), 20000);
+
+  req.on("close", () => {
+    clients.delete(res);
+    clearInterval(pingInterval);
+  });
 });
 
 /* ============================
     LÓGICA DE ESCANEO
 ============================ */
 
+// Parsear código de trabajador (B16-T20)
 function parseWorker(code) {
-  const m = String(code).toUpperCase().match(/^B(\d{2})$/);
+  const m = code.match(/^B(\d{2})-T(\d+)$/);  // Buscar BXX-TXX
   if (!m) return null;
-  const n = parseInt(m[1], 10);
-  return (n >= WORKER_MIN && n <= WORKER_MAX) ? `B${n}` : null;
+  const workerCode = `B${m[1]}`;
+  const tallos = parseInt(m[2], 10);  // Número de tallos
+  return { workerCode, tallos };  // Retornar código de trabajador y tallos
 }
 
+// Parsear código de producto (V01-60)
 function parseProduct(code) {
-  const m = String(code).toUpperCase().match(/^V(\d{1,2})-(\d{1,3})-(\d{1,3})$/);
+  const m = code.match(/^V(\d{2})-(\d{2})$/);  // Buscar VXX-XX
   if (!m) return null;
   return {
     variedad_id: `V${m[1]}`,
     grado_cm: parseInt(m[2], 10),
-    tallos: parseInt(m[3], 10),
-    raw: code.toUpperCase(),
+    raw: code,
   };
 }
 
 app.post("/api/scan", async (req, res) => {
   try {
     const { barcode, worker } = req.body;
-    const wCode = parseWorker(worker);
-    const pCode = parseProduct(barcode);
+    const code = (barcode || "").trim().toUpperCase();
 
-    if (wCode && pCode) {
-      const savedReg = await saveScan(wCode, pCode);
-      
-      // Buscamos el nombre de la variedad para el mensaje en tiempo real (SSE)
-      const varRes = await pool.query("SELECT nombre FROM variedades WHERE id = $1", [pCode.variedad_id]);
-      const varNombre = varRes.rows[0] ? varRes.rows[0].nombre : pCode.variedad_id;
+    const workerData = parseWorker(code);
+    const productCode = parseProduct(code);
 
-      const broadcastData = {
-        ...savedReg,
-        variedad_nombre: varNombre,
-        worker_name: workerNameMap[savedReg.worker] || savedReg.worker
-      };
-
-      broadcast({ kind: "scan", reg: broadcastData });
+    if (workerData) {
+      pendingAByWorker[workerData.workerCode] = workerData.workerCode;
+      if (globalPendingB) {
+        const result = await saveScan(workerData.workerCode, globalPendingB, workerData.tallos);
+        globalPendingB = null;
+        broadcast({ kind: "scan", reg: result });
+      }
       return res.json({ ok: true });
     }
-    res.status(400).json({ error: "Datos inválidos" });
+
+    if (productCode) {
+      if (worker) {
+        const w = parseWorker(worker);
+        if (w) {
+          const result = await saveScan(w.workerCode, productCode, w.tallos);
+          broadcast({ kind: "scan", reg: result });
+          return res.json({ ok: true });
+        }
+      }
+      globalPendingB = productCode;
+      return res.json({ ok: true });
+    }
+
+    res.status(400).json({ error: "Código no reconocido" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Error interno" });
   }
 });
 
-async function saveScan(worker, product) {
+/* ============================
+    FUNCIONES DE BASE DE DATOS
+============================ */
+
+async function saveScan(worker, product, tallos) {
   const client = await pool.connect();
   try {
-    const localTimestamp = new Date();
-    const query = `
-      INSERT INTO scans (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
-    `;
-    const values = [localTimestamp, worker, product.tallos, product.variedad_id, product.grado_cm, worker, product.raw];
-    const result = await client.query(query, values);
+    const varRes = await client.query("SELECT nombre FROM variedades WHERE id = $1", [product.variedad_id]);
+    const varNombre = varRes.rows[0] ? varRes.rows[0].nombre : product.variedad_id;
+    
+    // Obtenemos el nombre actual del mapa para guardarlo en el registro
+    const wName = workerNameMap[worker] || worker;
+
+    const result = await client.query(
+      `INSERT INTO scans 
+       (ts, worker, worker_name, tallos, variedad_id, grado_cm, raw_a, raw_b, variedad_nombre)
+       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [worker, wName, tallos, product.variedad_id, product.grado_cm, worker, product.raw, varNombre]
+    );
     return result.rows[0];
   } finally {
     client.release();
   }
 }
 
-function broadcast(data) {
-  const msg = `data: ${JSON.stringify(data)}\n\n`;
-  clients.forEach(res => res.write(msg));
+async function getScans(limit) {
+  const result = await pool.query("SELECT * FROM scans ORDER BY ts DESC LIMIT $1", [limit]);
+  return result.rows;
 }
 
-app.get("/api/stream", (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
-  clients.add(res);
-  req.on("close", () => clients.delete(res));
-});
+async function getPendingAll() {
+  const obj = {};
+  workers.forEach(w => { obj[w] = pendingAByWorker[w] || {}; });
+  return obj;
+}
 
+/* ============================
+    INICIO DEL SERVIDOR
+============================ */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT} (Hora y Variedades corregidas)`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Servidor activo en puerto ${PORT}`);
+});
