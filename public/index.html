@@ -1109,7 +1109,10 @@
   // =======================
   // CAPTURA "SIEMPRE ACTIVA"
   // (auto foco + wake lock)
-  // 
+  // y ARREGLO para NO invadir selects/inputs
+  // =======================
+
+  // --- NUEVO: control de auto-enfoque para no molestar al usuario ---
   const INTERACTIVE_SELECTOR = 'input, select, textarea, [contenteditable="true"], button:not(#btnFocus):not(#btnSerial)';
   let suspendAutoFocus = false; // si true, no forzamos foco al input oculto
 
