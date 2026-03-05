@@ -496,10 +496,13 @@
     // ----- OPCIÓN A: rotada 45° (como ahora) -----
     ctx.save();
     ctx.translate(cx, baseY + 8);
-    ctx.rotate(-Math.PI);   //180GRADOS
-    ctx.fillStyle = "rgba(214,230,255,.9)";
+    ctx.rotate(0); // horizontal
+    ct.fillStyle = "rgba(214,230,255,.9)";
     ctx.fillText(show, 0, 0);
     ctx.restore();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+
 
     // ----- OPCIÓN B (alternativa): horizontal centrada -----
     // Descomenta estas 4 líneas y comenta el bloque de "OPCIÓN A" si prefieres horizontal:
