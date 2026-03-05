@@ -23,7 +23,6 @@ const clients = new Set();
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/", (req, res) => {
-  // Si tu archivo se llama vista.html, cámbialo aquí.
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
@@ -83,10 +82,10 @@ app.get("/api/pendingAll", (req, res) => {
 });
 
 /* ============================
-    LÓGICA DE ESCANEO (NUEVOS FORMATOS)
+    LÓGICA DE ESCANEO (Bxx-Tyy & Vxx-gg)
 ============================ */
 
-// Bonchador ahora: B16-T20  (B=bonchador; T=tallos)
+// Bonchador: B16-T20 (B=bonchador, T=tallos)
 function parseWorker(code) {
   const up = String(code || "").trim().toUpperCase();
   const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
@@ -105,7 +104,7 @@ function parseWorker(code) {
   };
 }
 
-// Producto ahora: V01-60  (variedad y grado; SIN tallos)
+// Producto: V01-60 (variedad + grado; SIN tallos)
 function parseProduct(code) {
   const up = String(code || "").trim().toUpperCase();
   const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);

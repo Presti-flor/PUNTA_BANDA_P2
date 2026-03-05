@@ -97,6 +97,7 @@
     <div class="status"><span id="dot" class="dot"></span><span id="st">Conectando…</span><span id="mode" class="hint"></span></div>
   </div>
 
+  <!-- Input oculto para captura por teclado/lector -->
   <input id="scanInput" autocomplete="off" autocapitalize="off" spellcheck="false"
          style="opacity:0; position:absolute; left:-1000px; top:-1000px;" />
 
@@ -162,6 +163,7 @@
         <span class="pill mono" id="capState">CAPTURA: INACTIVA</span>
       </div>
 
+      <!-- BLOQUE ESCANEO (incluye Serial) -->
       <div class="scanBox">
         <div class="split">
           <div class="pill">Escaneo</div>
@@ -183,8 +185,16 @@
         <label style="margin-top:10px;">Entrada manual (teclado)</label>
         <input id="manualScan" class="mono" placeholder="Ej: B16-T20  ó  V01-60  (Enter)" />
 
-        <div class="hint" style="margin-top:8px;">
-          Último envío: <span id="lastScan" class="mono warnTxt">—</span>
+        <div class="split" style="margin-top:8px; gap:8px;">
+          <div class="hint">Último envío: <span id="lastScan" class="mono warnTxt">—</span></div>
+        </div>
+
+        <!-- NUEVO: estado/botón Web Serial -->
+        <div class="split" style="margin-top:8px; gap:8px;">
+          <span class="pill mono" id="serialState">SERIAL: DESCONECTADO</span>
+          <button id="btnSerial" class="ghost" title="Conectar lector USB que expone puerto serial (COM)">
+            Conectar lector USB (Serial)
+          </button>
         </div>
       </div>
 
@@ -204,9 +214,9 @@
 
 <script>
 (() => {
-  const API = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-  ? "http://127.0.0.1:3000" 
-  : "https://puntabandap2-production.up.railway.app";
+  const API = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+              ? "http://127.0.0.1:3000"
+              : "https://puntabandap2-production.up.railway.app";
   const $ = (id) => document.getElementById(id);
 
   const dot = $("dot"), st = $("st"), mode = $("mode");
@@ -235,6 +245,10 @@
 
   const lastWorkerEl = $("lastWorkerForV");
   const lastVEl = $("lastVPending");
+
+  // NUEVO: referencias Web Serial
+  const btnSerial = $("btnSerial");
+  const serialState = $("serialState");
 
   let captureEnabled = false;
 
@@ -269,21 +283,19 @@
     scanInput.focus({preventScroll:true});
   }
 
+  // ====== UTILIDADES TIEMPO / FILTROS ======
   function fmtTime(ts) {
     const d = new Date(ts);
     if (isNaN(d)) return ts || "";
     return d.toLocaleTimeString("es-CO",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
   }
-
   function sameDay(a, b) {
     return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
   }
-
   function windowFilter(ts){
     const now = new Date();
     const d = new Date(ts);
     if (isNaN(d)) return false;
-
     if (windowSel.value === "hour") {
       const start = new Date(now.getTime() - 60*60*1000);
       return d >= start && d <= now;
@@ -342,7 +354,7 @@
     }
   }
 
-  // -------- Canvas HiDPI --------
+  // -------- Canvas / chart helpers (idéntico a tu versión) --------
   let ctx = null;
   let cssW = 0, cssH = 0;
   let resizeObserver = null;
@@ -371,7 +383,6 @@
   }
 
   function crisp(v) { return Math.round(v) + 0.5; }
-
   function roundRectPath(ctx, x, y, w, h, r){
     const rr = Math.min(r, w/2, h/2);
     ctx.beginPath();
@@ -382,7 +393,6 @@
     ctx.arcTo(x, y, x+w, y, rr);
     ctx.closePath();
   }
-
   function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
 
   let barRects = [];
@@ -585,7 +595,6 @@
       ctx.textAlign = "left";
       ctx.fillText(`Rendimiento por bonchador (${winLabel})${onlyActive ? " — Solo activos" : ""}`, padL, padT);
 
-      drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, computeNiceMax( Math.max(1, ...displayWorkers.map(w => (counts[w]||0)) ) ));
       renderAt(p);
 
       if (t < 1){
@@ -632,15 +641,11 @@
   chart.addEventListener('mouseleave', hideTip);
 
   /* ==================================================
-     AGRUPACIONES PARA EL DETALLE POR TARJETA (NUEVO)
+     BREAKDOWN POR VARIEDAD PARA CADA TARJETA
      ================================================== */
 
-  // Filtra los scans por la ventana activa (hora / hoy)
-  function scansInWindow() {
-    return scans.filter(r => windowFilter(r.ts));
-  }
+  function scansInWindow() { return scans.filter(r => windowFilter(r.ts)); }
 
-  // worker -> { totalRamos, totalTallos, variedades: { [varKey]: { nombre, ramos, tallos, grados: { [grado]: { ramos, tallos } } } } }
   function breakdownByWorker() {
     const byW = {};
     const rows = scansInWindow();
@@ -654,33 +659,22 @@
       const tallos = Number(r.tallos) || 0;
 
       if (!byW[w]) {
-        byW[w] = {
-          totalRamos: 0,
-          totalTallos: 0,
-          variedades: {}
-        };
+        byW[w] = { totalRamos: 0, totalTallos: 0, variedades: {} };
       }
       const itW = byW[w];
       itW.totalRamos += 1;
       itW.totalTallos += tallos;
 
-      // Para agrupar por variedad SOLA, usamos varNombre como key.
-      // Si prefieres variedad+grado, usa: const key = `${varNombre} · ${grado}`;
-      const key = varNombre;
-
-      if (!itW.variedades[key]) {
-        itW.variedades[key] = { nombre: varNombre, ramos: 0, tallos: 0, grados: {} };
-      }
+      const key = varNombre; // usar `${varNombre} · ${grado}` si quieres por grado
+      if (!itW.variedades[key]) itW.variedades[key] = { nombre: varNombre, ramos: 0, tallos: 0, grados: {} };
       const itV = itW.variedades[key];
       itV.ramos += 1;
       itV.tallos += tallos;
 
-      // Desglose por grado (dejar preparado por si lo quieres mostrar)
       if (!itV.grados[grado]) itV.grados[grado] = { ramos: 0, tallos: 0 };
       itV.grados[grado].ramos += 1;
       itV.grados[grado].tallos += tallos;
     }
-
     return byW;
   }
 
@@ -690,7 +684,6 @@
     return arr;
   }
 
-  // RENDER de tarjetas con detalle
   function renderWorkerCards(displayWorkers, counts, stems) {
     const hrs = hoursInWindow();
     const byW = breakdownByWorker();
@@ -712,7 +705,6 @@
       const rest = varArr.slice(topN);
 
       const makeVarietyRow = (v) => {
-        // Desglose por grado (opcional): quita los comentarios si lo quieres visible
         const grados = Object.entries(v.grados || {});
         const gradosSorted = grados.sort((a,b)=> (b[1].ramos||0) - (a[1].ramos||0));
         const gradosHtml = gradosSorted.map(([g, gvals]) =>
@@ -727,10 +719,8 @@
             <span class="subPill"><b>${v.ramos}</b> ramos</span>
             <span class="subPill"><b>${v.tallos}</b> tallos</span>
           </div>
-          <!-- Desglose por grado (opcional): descomenta para mostrar
-          <div class="subRow" style="margin-top:4px;">
-            ${gradosHtml}
-          </div>
+          <!-- Si quieres mostrar grados por defecto, quita este comentario:
+          <div class="subRow" style="margin-top:4px;">${gradosHtml}</div>
           -->
         `;
       };
@@ -824,13 +814,9 @@
           body: JSON.stringify({ code, name })
         });
 
-        if (res.ok) {
-          successCount++;
-        } else {
-          console.error(`Error al guardar bonchador ${code}`);
-        }
+        if (res.ok) successCount++;
       } catch (err) {
-        console.error(`Error de red para ${code}:`, err);
+        // ignore
       }
     }
 
@@ -905,7 +891,7 @@
     renderAll();
   }
 
-  // ============== ESCÁNER (Bxx-Tyy y Vxx-gg) ==============
+  // ============== PARSERS: Bxx-Tyy y Vxx-gg ==============
   function parseBonchador(code) {
     const up = String(code||"").trim().toUpperCase();
     const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
@@ -916,7 +902,6 @@
     if (!Number.isFinite(t) || t <= 0) return null;
     return { raw: up, code: "B" + n, tallos: t };
   }
-
   function parseV(code) {
     const up = String(code||"").trim().toUpperCase();
     const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);
@@ -926,7 +911,6 @@
     if (!Number.isFinite(grado)) return null;
     return { raw: up, variedad, grado };
   }
-
   function detectBarcodeType(code) {
     const up = String(code||"").trim().toUpperCase();
     const b = parseBonchador(up);
@@ -966,13 +950,13 @@
     }
 
     if (isB) {
-      pendingWorker = b; // { raw, code, tallos }
+      pendingWorker = b;
       setLastWorkerUI(pendingWorker.raw);
 
       if (pendingV && pendingWorker) {
         const out = await sendToServer({
-          worker: pendingWorker.raw,  // "B16-T20"
-          barcode: pendingV.raw       // "V01-60"
+          worker: pendingWorker.raw,
+          barcode: pendingV.raw
         });
         if (!out.ok) { lastScanEl.textContent = pendingWorker.raw + " / " + pendingV.raw + " (ERROR)"; return; }
 
@@ -987,13 +971,13 @@
     }
 
     if (isV) {
-      pendingV = v; // { raw, variedad, grado }
+      pendingV = v;
       setLastVUI(pendingV.raw);
 
       if (pendingWorker && pendingV) {
         const out = await sendToServer({
-          worker: pendingWorker.raw,  // "B16-T20"
-          barcode: pendingV.raw       // "V01-60"
+          worker: pendingWorker.raw,
+          barcode: pendingV.raw
         });
         if (!out.ok) { lastScanEl.textContent = pendingWorker.raw + " / " + pendingV.raw + " (ERROR)"; return; }
 
@@ -1008,7 +992,7 @@
     }
   }
 
-  // ===== Eventos de entrada =====
+  // ===== Eventos de entrada (teclado/lector tipo teclado) =====
   manualScan.addEventListener("keydown", async (e) => {
     if (e.key !== "Enter") return;
     const code = (manualScan.value || "").trim();
@@ -1041,9 +1025,7 @@
 
   function startPollingFallback() {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(async () => {
-      await refreshAll();
-    }, 8000);
+    pollTimer = setInterval(async () => { await refreshAll(); }, 8000);
   }
 
   function startSSE() {
@@ -1129,10 +1111,150 @@
     }
   }
 
+  // =======================
+  // CAPTURA "SIEMPRE ACTIVA"
+  // (auto foco + wake lock)
+  // =======================
+  function focusScanInput() {
+    captureEnabled = true;
+    setCaptureUI?.();
+    if (scanInput) {
+      scanInput.setAttribute("tabindex", "0");
+      scanInput.focus({ preventScroll: true });
+      const v = scanInput.value; scanInput.value = ""; scanInput.value = v;
+    }
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      focusScanInput();
+      requestWakeLock(); // reacquire si se liberó
+    } else {
+      releaseWakeLock();
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    focusScanInput();
+    requestWakeLock();
+  });
+
+  scanInput?.addEventListener("blur", () => {
+    if (document.visibilityState === "visible") setTimeout(focusScanInput, 0);
+  });
+
+  setInterval(() => {
+    if (document.visibilityState === "visible" && document.activeElement !== scanInput) {
+      focusScanInput();
+    }
+  }, 1500);
+
+  // Screen Wake Lock API (mantener pantalla encendida) — requiere HTTPS/localhost
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try {
+      if ("wakeLock" in navigator && document.visibilityState === "visible") {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { /* se liberó; reintentar al volver visible */ });
+      }
+    } catch (err) { /* puede fallar por ahorro de energía, permisos, invisibilidad */ }
+  }
+  async function releaseWakeLock() { try { await wakeLock?.release(); } catch{} wakeLock = null; }
+
+  // ===================
+  // WEB SERIAL (OPCIONAL)
+  // ===================
+  let serialPort = null;
+  let serialReader = null;
+  let serialReading = false;
+
+  function setSerialState(text, ok=false) {
+    if (!serialState) return;
+    serialState.textContent = "SERIAL: " + text;
+    serialState.className = "pill mono " + (ok ? "okTxt" : "warnTxt");
+  }
+
+  async function startSerialReadLoop(port) {
+    const textDecoder = new TextDecoderStream();
+    port.readable.pipeTo(textDecoder.writable).catch(()=>{});
+    const reader = textDecoder.readable.getReader();
+    serialReader = reader;
+    serialReading = true;
+
+    let sBuffer = "";
+    try {
+      while (serialReading) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          sBuffer += value;
+          let idx;
+          while ((idx = sBuffer.search(/\r|\n/)) >= 0) {
+            const line = sBuffer.slice(0, idx).trim();
+            sBuffer = sBuffer.slice(idx + 1);
+            if (line) {
+              lastScanEl && (lastScanEl.textContent = line);
+              await postScan(line);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // ignore
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+  }
+
+  async function openSerialPort(port) {
+    await port.open({ baudRate: 9600 });
+    setSerialState("CONECTADO", true);
+    serialPort = port;
+
+    navigator.serial.addEventListener("disconnect", (ev) => {
+      if (ev.target === serialPort) {
+        setSerialState("DESCONECTADO");
+        serialReading = false;
+        serialPort = null;
+      }
+    });
+
+    await startSerialReadLoop(port);
+  }
+
+  async function connectSerial() {
+    try {
+      if (!("serial" in navigator)) {
+        alert("Tu navegador no soporta Web Serial. Usa Chrome/Edge reciente o conecta como teclado.");
+        setSerialState("NO SOPORTADO");
+        return;
+      }
+
+      const ports = await navigator.serial.getPorts();
+      if (ports && ports.length && !serialPort) {
+        await openSerialPort(ports[0]);
+        return;
+      }
+
+      const port = await navigator.serial.requestPort({
+        // Si conoces Vendor/Product IDs, agrega filtros:
+        // filters: [{ usbVendorId: 0xXXXX, usbProductId: 0xYYYY }]
+      });
+      await openSerialPort(port);
+    } catch (err) {
+      setSerialState("DESCONECTADO");
+    }
+  }
+
+  btnSerial?.addEventListener("click", connectSerial);
+
+  // ========= Arranque =========
   (async () => {
-    setCaptureUI();
-    setLastWorkerUI(null);
-    setLastVUI(null);
+    // Activar captura y WakeLock en cuanto carga
+    window.addEventListener("load", () => {
+      focusScanInput();
+      requestWakeLock();
+    });
 
     try {
       await loadWorkers();
@@ -1143,6 +1265,14 @@
     } catch {
       pillApi.textContent = "API: error";
       setStatus(false, "Sin API", "Inicia node server.js en 127.0.0.1:3000");
+    }
+
+    // Intento de reconexión automática a puertos serial previamente autorizados
+    if ("serial" in navigator) {
+      try {
+        const ports = await navigator.serial.getPorts();
+        if (ports && ports.length) await openSerialPort(ports[0]);
+      } catch {}
     }
 
     setupHiDPICanvas();
