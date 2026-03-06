@@ -908,9 +908,31 @@
     }
   }
 
-  async function saveNames() {
-    const inputs = namesBox.querySelectorAll("input[data-worker]");
-    let successCount = 0;
+  
+async function saveNames() {
+  const inputs = namesBox.querySelectorAll("input[data-worker]");
+  let successCount = 0;
+
+  for (const inp of inputs) {
+    const code = inp.dataset.worker;
+    const name = (inp.value || "").trim();
+    if (!name) continue;
+
+    try {
+      const res = await fetch(`${API}/api/workers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, name })
+      });
+      if (res.ok) successCount++;
+    } catch {}
+  }
+
+  // Sin alertas. Si hubo cambios, refrescamos datos para que se vea reflejado.
+  if (successCount > 0) {
+    await loadWorkers();
+    await refreshAll();
+  }
 
     for (const inp of inputs) {
       const code = inp.dataset.worker;
