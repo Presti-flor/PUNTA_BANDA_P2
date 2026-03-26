@@ -108,19 +108,30 @@
 
   <div class="grid">
     <div class="card right card-rendimiento">
-      <div class="split">
-        <div class="pill">Rendimiento por bonchador</div>
-        <div class="row2" style="width:420px;max-width:40%;">
-          <select id="windowSel">
-            <option value="hour">Última hora</option>
-            <option value="today">Total hoy</option>
-          </select>
-          <select id="activeSel" title="Qué mostrar">
-            <option value="active">Solo activos</option>
-            <option value="all">Todos</option>
-          </select>
-        </div>
-      </div>
+    <div class="split">
+  <div class="pill">Rendimiento por bonchador</div>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;width:100%;">
+    <select id="windowSel">
+      <option value="hour">Última hora</option>
+      <option value="today">Total hoy</option>
+    </select>
+
+    <select id="activeSel" title="Qué mostrar">
+      <option value="active">Solo activos</option>
+      <option value="all">Todos</option>
+    </select>
+
+    <select id="laminaFilter">
+      <option value="">Todas las láminas</option>
+    </select>
+
+    <select id="variedadFilter">
+      <option value="">Todas las variedades</option>
+    </select>
+
+    <input id="tallosMinFilter" type="number" min="0" placeholder="Tallos mín." />
+  </div>
+</div>
 
       <div class="split" style="margin-top:8px;">
         <div class="hint" id="kpiText">—</div>
@@ -138,6 +149,38 @@
 
       <div class="legend" id="legend"></div>
       <div class="kpiGrid" id="workerCards"></div>
+
+      <div class="split" style="margin-top:12px;">
+  <div class="pill">Resumen por lámina</div>
+</div>
+<div class="scroll" style="margin-top:8px;">
+  <table>
+    <thead>
+      <tr>
+        <th>Lámina</th>
+        <th>Registros</th>
+        <th>Tallos</th>
+      </tr>
+    </thead>
+    <tbody id="tbLamina"></tbody>
+  </table>
+</div>
+
+<div class="split" style="margin-top:12px;">
+  <div class="pill">Resumen por variedad</div>
+</div>
+<div class="scroll" style="margin-top:8px;">
+  <table>
+    <thead>
+      <tr>
+        <th>Variedad</th>
+        <th>Registros</th>
+        <th>Tallos</th>
+      </tr>
+    </thead>
+    <tbody id="tbVariedad"></tbody>
+  </table>
+</div>
 
       <div class="split" style="margin-top:12px;">
         <div class="pill">Últimos registros</div>
@@ -236,6 +279,12 @@
   const lastScanEl = $("lastScan");
   const pendingBox = $("pendingBox");
   const btnRefresh = $("btnRefresh");
+  const laminaFilter = $("laminaFilter");
+const variedadFilter = $("variedadFilter");
+const tallosMinFilter = $("tallosMinFilter");
+
+const tbLamina = $("tbLamina");
+const tbVariedad = $("tbVariedad");
 
   const chart = $("chart");
   const chartTip = $("chartTip");
@@ -312,27 +361,44 @@
     }
     return sameDay(d, now);
   }
+  function getFilteredScans() {
+  const laminaVal = String(laminaFilter?.value || "").trim().toUpperCase();
+  const variedadVal = String(variedadFilter?.value || "").trim().toUpperCase();
+  const tallosMin = Number(tallosMinFilter?.value || 0);
+
+  return scans.filter(r => {
+    if (!windowFilter(r.ts)) return false;
+
+    const lamina = String(r.lamina_id || r.lamina_nombre || "").trim().toUpperCase();
+    const variedad = String(r.variedad_id || r.variedad_nombre || "").trim().toUpperCase();
+    const tallos = Number(r.tallos || 0);
+
+    if (laminaVal && lamina !== laminaVal) return false;
+    if (variedadVal && variedad !== variedadVal) return false;
+    if (Number.isFinite(tallosMin) && tallos < tallosMin) return false;
+
+    return true;
+  });
+}
 
   function countsByWorker() {
-    const counts = Object.fromEntries(workers.map(w => [w, 0]));
-    for (const r of scans) {
-      if (!windowFilter(r.ts)) continue;
-      const w = String(r.worker || "").trim().toUpperCase();
-      if (counts[w] != null) counts[w] += 1;
-    }
-    return counts;
+  const counts = Object.fromEntries(workers.map(w => [w, 0]));
+  for (const r of getFilteredScans()) {
+    const w = String(r.worker || "").trim().toUpperCase();
+    if (counts[w] != null) counts[w] += 1;
   }
+  return counts;
+}
 
   function stemsByWorkerFiltered() {
-    const stems = Object.fromEntries(workers.map(w => [w, 0]));
-    for (const r of scans) {
-      if (!windowFilter(r.ts)) continue;
-      const w = String(r.worker || "").trim().toUpperCase();
-      const t = Number(r.tallos);
-      if (stems[w] != null && Number.isFinite(t) && t > 0) stems[w] += t;
-    }
-    return stems;
+  const stems = Object.fromEntries(workers.map(w => [w, 0]));
+  for (const r of getFilteredScans()) {
+    const w = String(r.worker || "").trim().toUpperCase();
+    const t = Number(r.tallos);
+    if (stems[w] != null && Number.isFinite(t) && t > 0) stems[w] += t;
   }
+  return stems;
+}
 
   function hoursInWindow() {
     const now = new Date();
@@ -724,7 +790,9 @@
   });
   chart.addEventListener('mouseleave', hideTip);
 
-  function scansInWindow() { return scans.filter(r => windowFilter(r.ts)); }
+  function scansInWindow() {
+  return getFilteredScans();
+}
 
   function breakdownByWorker() {
     const byW = {};
@@ -864,6 +932,32 @@
       namesBox.appendChild(row);
     }
   }
+  function populateFilterOptions() {
+  const laminas = [...new Set(
+    scans.map(r => String(r.lamina_id || r.lamina_nombre || "").trim()).filter(Boolean)
+  )].sort();
+
+  const variedades = [...new Set(
+    scans.map(r => String(r.variedad_id || r.variedad_nombre || "").trim()).filter(Boolean)
+  )].sort();
+
+  const currentLamina = laminaFilter.value;
+  const currentVariedad = variedadFilter.value;
+
+  laminaFilter.innerHTML = `<option value="">Todas las láminas</option>` +
+    laminas.map(x => `<option value="${x.toUpperCase()}">${x}</option>`).join("");
+
+  variedadFilter.innerHTML = `<option value="">Todas las variedades</option>` +
+    variedades.map(x => `<option value="${x.toUpperCase()}">${x}</option>`).join("");
+
+  if ([...laminaFilter.options].some(o => o.value === currentLamina)) {
+    laminaFilter.value = currentLamina;
+  }
+
+  if ([...variedadFilter.options].some(o => o.value === currentVariedad)) {
+    variedadFilter.value = currentVariedad;
+  }
+}
 
   async function saveNames() {
     const inputs = namesBox.querySelectorAll("input[data-worker]");
@@ -891,37 +985,95 @@
   }
 
   function renderTable() {
-    tb.innerHTML = "";
-    for (const r of scans.slice(0, 150)) {
-      const name = r.worker_name || workerNameMap[String(r.worker||"").trim()] || "";
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="mono">${fmtTime(r.ts)}</td>
-        <td><span class="pill">${r.worker || ""}</span></td>
-        <td>${name}</td>
-        <td>${r.tallos ?? ""}</td>
-        <td><span class="pill mono">${r.variedad_nombre ?? r.variedad_id ?? "—"}</span></td>
-        <td>${r.grado_cm || ""}</td>
-        <td><span class="pill mono">${r.lamina_nombre ?? r.lamina_id ?? "—"}</span></td>
-      `;
-      tb.appendChild(tr);
-    }
-    countInfo.textContent = `${scans.length} registros`;
+  tb.innerHTML = "";
+
+  const rows = getFilteredScans()
+    .sort((a,b) => new Date(b.ts) - new Date(a.ts))
+    .slice(0, 150);
+
+  for (const r of rows) {
+    const name = r.worker_name || workerNameMap[String(r.worker||"").trim()] || "";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${fmtTime(r.ts)}</td>
+      <td><span class="pill">${r.worker || ""}</span></td>
+      <td>${name}</td>
+      <td>${r.tallos ?? ""}</td>
+      <td><span class="pill mono">${r.variedad_nombre ?? r.variedad_id ?? "—"}</span></td>
+      <td>${r.grado_cm || ""}</td>
+      <td><span class="pill mono">${r.lamina_nombre ?? r.lamina_id ?? "—"}</span></td>
+    `;
+    tb.appendChild(tr);
   }
+
+  countInfo.textContent = `${getFilteredScans().length} registros filtrados`;
+}
+
+  function renderSummaryByLamina() {
+  const rows = getFilteredScans();
+  const map = {};
+
+  for (const r of rows) {
+    const key = String(r.lamina_nombre || r.lamina_id || "—").trim();
+    if (!map[key]) map[key] = { registros: 0, tallos: 0 };
+    map[key].registros += 1;
+    map[key].tallos += Number(r.tallos || 0);
+  }
+
+  const sorted = Object.entries(map).sort((a, b) => b[1].registros - a[1].registros);
+
+  tbLamina.innerHTML = sorted.map(([lamina, vals]) => `
+    <tr>
+      <td><span class="pill mono">${lamina}</span></td>
+      <td>${vals.registros}</td>
+      <td>${vals.tallos}</td>
+    </tr>
+  `).join("") || `
+    <tr><td colspan="3" class="hint">Sin datos</td></tr>
+  `;
+}
+
+function renderSummaryByVariedad() {
+  const rows = getFilteredScans();
+  const map = {};
+
+  for (const r of rows) {
+    const key = String(r.variedad_nombre || r.variedad_id || "—").trim();
+    if (!map[key]) map[key] = { registros: 0, tallos: 0 };
+    map[key].registros += 1;
+    map[key].tallos += Number(r.tallos || 0);
+  }
+
+  const sorted = Object.entries(map).sort((a, b) => b[1].registros - a[1].registros);
+
+  tbVariedad.innerHTML = sorted.map(([variedad, vals]) => `
+    <tr>
+      <td><span class="pill mono">${variedad}</span></td>
+      <td>${vals.registros}</td>
+      <td>${vals.tallos}</td>
+    </tr>
+  `).join("") || `
+    <tr><td colspan="3" class="hint">Sin datos</td></tr>
+  `;
+}
 
   function renderAll() {
-    const counts = countsByWorker();
-    const stems  = stemsByWorkerFiltered();
+  populateFilterOptions();
 
-    const displayWorkers = getDisplayWorkers(counts);
-    const graphWorkers = (activeSel.value === "active") ? getActiveWorkers(counts) : displayWorkers;
+  const counts = countsByWorker();
+  const stems  = stemsByWorkerFiltered();
 
-    renderPendingBox();
-    buildLegend(displayWorkers);
-    drawWorkerChart(graphWorkers, counts, stems);
-    renderWorkerCards(displayWorkers, counts, stems);
-    renderTable();
-  }
+  const displayWorkers = getDisplayWorkers(counts);
+  const graphWorkers = (activeSel.value === "active") ? getActiveWorkers(counts) : displayWorkers;
+
+  renderPendingBox();
+  buildLegend(displayWorkers);
+  drawWorkerChart(graphWorkers, counts, stems);
+  renderWorkerCards(displayWorkers, counts, stems);
+  renderSummaryByLamina();
+  renderSummaryByVariedad();
+  renderTable();
+}
 
   async function loadWorkers() {
     const res = await fetch(API + "/api/workers", {cache:"no-store"}).catch(()=>null);
@@ -1105,6 +1257,9 @@
   windowSel.addEventListener("change", renderAll);
   activeSel.addEventListener("change", renderAll);
   btnSaveNames.addEventListener("click", saveNames);
+  laminaFilter.addEventListener("change", renderAll);
+variedadFilter.addEventListener("change", renderAll);
+tallosMinFilter.addEventListener("input", renderAll);
 
   let pollTimer = null;
 
