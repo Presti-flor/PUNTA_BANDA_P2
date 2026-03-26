@@ -4,7 +4,15 @@
 // Formatos de escaneo:
 //   • Bonchador + tallos: B16-T20
 //   • Variedad + grado : V01-60
-// Guarda en DB: worker (p.ej. "B16"), tallos (del bonchador), variedad_id, grado_cm
+//   • Lámina           : L1, L2, L3 ...
+//
+// Guarda en DB:
+//   worker, tallos, variedad_id, grado_cm, lamina_id
+//
+// Requisito en DB:
+//   ALTER TABLE public.scans
+//   ADD COLUMN IF NOT EXISTS lamina_id character varying(20);
+//
 // Incluye SSE para actualizaciones en tiempo real.
 // -------------------------------------------------------------
 
@@ -25,7 +33,6 @@ app.use(express.json());
 // -----------------------------
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // En Railway/Heroku suelen forzar SSL
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
 });
 
@@ -65,33 +72,44 @@ app.get("/api/workers", (req, res) => {
 // Guardar/actualizar nombre de bonchador (en memoria)
 app.post("/api/workers", (req, res) => {
   const { code, name } = req.body || {};
-  if (!code || !name) return res.status(400).json({ error: "Faltan datos" });
+  if (!code || !name) {
+    return res.status(400).json({ error: "Faltan datos" });
+  }
+
   workerNameMap[String(code).toUpperCase()] = String(name).trim();
   res.json({ ok: true });
 });
 
-// Traer escaneos recientes (con nombre de variedad por JOIN)
+// Traer escaneos recientes (con nombre de variedad por JOIN y nombre de lámina por JOIN)
 app.get("/api/scans", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 200;
+
     const query = `
       SELECT 
+        s.id,
         s.ts, 
         s.worker, 
         s.tallos, 
         s.variedad_id, 
         s.grado_cm,
-        COALESCE(v.nombre, s.variedad_id) AS variedad_nombre
+        s.lamina_id,
+        s.raw_a,
+        s.raw_b,
+        COALESCE(v.nombre, s.variedad_id) AS variedad_nombre,
+        COALESCE(l.nombre, s.lamina_id) AS lamina_nombre
       FROM scans s
       LEFT JOIN variedades v ON s.variedad_id = v.id
+      LEFT JOIN lamina l ON s.lamina_id = l.id
       ORDER BY s.ts DESC 
       LIMIT $1
     `;
+
     const result = await pool.query(query, [limit]);
 
-    const finalData = result.rows.map(row => ({
+    const finalData = result.rows.map((row) => ({
       ...row,
-      worker_name: workerNameMap[row.worker] || row.worker
+      worker_name: row.worker ? (workerNameMap[row.worker] || row.worker) : null,
     }));
 
     res.json(finalData);
@@ -107,10 +125,10 @@ app.get("/api/pendingAll", (req, res) => {
 });
 
 /* ==========================================================
-   LÓGICA DE PARSEOS (NUEVOS FORMATOS)
+   LÓGICA DE PARSEOS
    ========================================================== */
 
-// Bonchador: B16-T20  (B=bonchador; T=tallos)
+// Bonchador: B16-T20
 function parseWorker(code) {
   const up = String(code || "").trim().toUpperCase();
   const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
@@ -123,13 +141,13 @@ function parseWorker(code) {
   if (!Number.isFinite(tallos) || tallos <= 0) return null;
 
   return {
-    code: `B${n}`,   // Para DB y mostrar (ej: "B16")
-    tallos,          // Tallos declarados en el bonchador
-    raw: up          // Escaneo crudo (ej: "B16-T20")
+    code: `B${n}`,
+    tallos,
+    raw: up,
   };
 }
 
-// Producto: V01-60  (variedad y grado; SIN tallos)
+// Producto: V01-60
 function parseProduct(code) {
   const up = String(code || "").trim().toUpperCase();
   const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);
@@ -137,71 +155,100 @@ function parseProduct(code) {
 
   const variedad_id = `V${m[1]}`;
   const grado_cm = parseInt(m[2], 10);
-  if (!Number.isFinite(grado_cm)) return null;
+  if (!Number.isFinite(grado_cm) || grado_cm <= 0) return null;
 
   return {
     variedad_id,
     grado_cm,
-    raw: up
+    raw: up,
   };
 }
 
-// Recibir combinación (dos pasos en cualquier orden desde el front)
-app.post("/api/scan", async (req, res) => {
-  try {
-    const { barcode, worker } = req.body || {};
-    const wObj = parseWorker(worker);
-    const pObj = parseProduct(barcode);
+// Lámina: L1, L2, L3...
+function parseLamina(code) {
+  const up = String(code || "").trim().toUpperCase();
+  const m = up.match(/^L(\d{1,3})$/);
+  if (!m) return null;
 
-    if (wObj && pObj) {
-      const savedReg = await saveScan(wObj, pObj);
+  const n = parseInt(m[1], 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
 
-      // Traemos el nombre de la variedad para emitirlo por SSE
-      let varNombre = pObj.variedad_id;
-      try {
-        const varRes = await pool.query(
-          "SELECT nombre FROM variedades WHERE id = $1",
-          [pObj.variedad_id]
-        );
-        if (varRes.rows[0]) varNombre = varRes.rows[0].nombre || pObj.variedad_id;
-      } catch {}
+  return {
+    id: `L${n}`,
+    raw: up,
+  };
+}
 
-      const broadcastData = {
-        ...savedReg,
-        variedad_nombre: varNombre,
-        worker_name: workerNameMap[savedReg.worker] || savedReg.worker
-      };
+/* ==========================================================
+   VALIDACIONES DE CATÁLOGOS
+   ========================================================== */
 
-      broadcast({ kind: "scan", reg: broadcastData });
-      return res.json({ ok: true });
-    }
+async function getVariedadById(variedadId) {
+  const result = await pool.query(
+    `
+    SELECT id, nombre
+    FROM variedades
+    WHERE id = $1
+    LIMIT 1
+    `,
+    [variedadId]
+  );
 
-    return res.status(400).json({ error: "Datos inválidos" });
-  } catch (err) {
-    console.error("POST /api/scan error:", err);
-    res.status(500).json({ error: "Error interno" });
-  }
-});
+  return result.rows[0] || null;
+}
 
-// Guardar registro en DB
-async function saveScan(wObj, pObj) {
+async function getLaminaActiva(laminaId) {
+  const result = await pool.query(
+    `
+    SELECT id, nombre, activo
+    FROM lamina
+    WHERE UPPER(id) = $1
+    LIMIT 1
+    `,
+    [String(laminaId || "").toUpperCase()]
+  );
+
+  if (!result.rows[0]) return null;
+  if (!result.rows[0].activo) return { ...result.rows[0], invalida: true };
+
+  return result.rows[0];
+}
+
+/* ==========================================================
+   GUARDADO EN DB
+   ========================================================== */
+
+async function saveScan(wObj, pObj, lObj) {
   const client = await pool.connect();
   try {
     const localTimestamp = new Date();
+
     const query = `
-      INSERT INTO scans (ts, worker, tallos, variedad_id, grado_cm, raw_a, raw_b)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO scans (
+        ts,
+        worker,
+        tallos,
+        variedad_id,
+        grado_cm,
+        raw_a,
+        raw_b,
+        lamina_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
     `;
+
     const values = [
       localTimestamp,
-      wObj.code,          // "B16"
-      wObj.tallos,        // tallos desde bonchador
-      pObj.variedad_id,   // "V01"
-      pObj.grado_cm,      // 60
-      wObj.raw,           // raw_a: "B16-T20"
-      pObj.raw            // raw_b: "V01-60"
+      wObj.code,        // B16
+      wObj.tallos,      // 20
+      pObj.variedad_id, // V01
+      pObj.grado_cm,    // 60
+      wObj.raw,         // B16-T20
+      pObj.raw,         // V01-60
+      lObj.id,          // L1
     ];
+
     const result = await client.query(query, values);
     return result.rows[0];
   } finally {
@@ -210,12 +257,89 @@ async function saveScan(wObj, pObj) {
 }
 
 /* ==========================================================
+   ESCANEO PRINCIPAL
+   Espera:
+   {
+     "worker": "B16-T20",
+     "barcode": "V01-60",
+     "lamina": "L1"
+   }
+   ========================================================== */
+
+app.post("/api/scan", async (req, res) => {
+  try {
+    const { barcode, worker, lamina } = req.body || {};
+
+    const wObj = parseWorker(worker);
+    const pObj = parseProduct(barcode);
+    const lObj = parseLamina(lamina);
+
+    if (!wObj) {
+      return res.status(400).json({
+        error: "Bonchador inválido. Formato esperado: B16-T20",
+      });
+    }
+
+    if (!pObj) {
+      return res.status(400).json({
+        error: "Variedad inválida. Formato esperado: V01-60",
+      });
+    }
+
+    if (!lObj) {
+      return res.status(400).json({
+        error: "Lámina inválida. Formato esperado: L1, L2, L3...",
+      });
+    }
+
+    const variedadDb = await getVariedadById(pObj.variedad_id);
+    if (!variedadDb) {
+      return res.status(400).json({
+        error: `La variedad ${pObj.variedad_id} no existe en la tabla variedades`,
+      });
+    }
+
+    const laminaDb = await getLaminaActiva(lObj.id);
+    if (!laminaDb) {
+      return res.status(400).json({
+        error: `La lámina ${lObj.id} no existe en la tabla lamina`,
+      });
+    }
+
+    if (laminaDb.invalida) {
+      return res.status(400).json({
+        error: `La lámina ${lObj.id} está inactiva`,
+      });
+    }
+
+    const savedReg = await saveScan(wObj, pObj, lObj);
+
+    const broadcastData = {
+      ...savedReg,
+      variedad_nombre: variedadDb.nombre || pObj.variedad_id,
+      worker_name: workerNameMap[savedReg.worker] || savedReg.worker,
+      lamina_nombre: laminaDb.nombre || lObj.id,
+    };
+
+    broadcast({ kind: "scan", reg: broadcastData });
+
+    return res.json({
+      ok: true,
+      reg: broadcastData,
+    });
+  } catch (err) {
+    console.error("POST /api/scan error:", err);
+    res.status(500).json({ error: "Error interno" });
+  }
+});
+
+/* ==========================================================
    SSE (Server-Sent Events) en /api/stream
    ========================================================== */
 
 function broadcast(data) {
   const msg = `data: ${JSON.stringify(data)}\n\n`;
-  clients.forEach(res => res.write(msg));
+  clients.forEach((res) => res.write(msg));
 }
 
 app.get("/api/stream", (req, res) => {
@@ -224,13 +348,13 @@ app.get("/api/stream", (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  // Mantener conexión
   clients.add(res);
-
 
   req.on("close", () => {
     clients.delete(res);
-    try { res.end(); } catch {}
+    try {
+      res.end();
+    } catch {}
   });
 });
 
@@ -240,5 +364,5 @@ app.get("/api/stream", (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor en puerto ${PORT} (Formatos: Bxx-Tyy y Vxx-gg)`);
+  console.log(`Servidor en puerto ${PORT} (Formatos: Bxx-Tyy, Vxx-gg y Lx)`);
 });

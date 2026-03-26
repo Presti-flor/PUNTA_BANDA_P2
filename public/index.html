@@ -16,11 +16,12 @@
     .title{font-weight:900;font-size:18px}
     .status{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}
     .dot{width:10px;height:10px;border-radius:50%;background:var(--warn)}
-    .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
+    .dot.ok{background:var(--ok)}
+    .dot.bad{background:var(--bad)}
     .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;margin-top:12px}
     .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:14px;padding:12px}
-    .left{grid-column:span 0} .right{grid-column:span 14}
-    @media(max-width:1020px){.left,.right{grid-column:span 12}}
+    .right{grid-column:span 12}
+    @media(max-width:1020px){.right{grid-column:span 12}}
     label{display:block;color:var(--muted);font-size:12px;margin:10px 0 6px}
     input,button,select{width:100%;background:rgba(15,27,47,.9);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;outline:none}
     button{cursor:pointer}
@@ -30,7 +31,8 @@
     .hint{color:var(--muted);font-size:12px;line-height:1.35}
     .split{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
     .scanBox{border:1px dashed rgba(155,176,208,.5);border-radius:14px;padding:10px;background:rgba(10,18,32,.22);margin-top:10px}
-    .okTxt{color:rgba(34,197,94,.95)} .warnTxt{color:rgba(245,158,11,.95)}
+    .okTxt{color:rgba(34,197,94,.95)}
+    .warnTxt{color:rgba(245,158,11,.95)}
 
     .chartWrap{
       position: relative;
@@ -94,10 +96,13 @@
 <div class="wrap">
   <div class="top">
     <div class="title">GRAFICA - RENDIMIENTOS - PRESTIGE P2</div>
-    <div class="status"><span id="dot" class="dot"></span><span id="st">Conectando…</span><span id="mode" class="hint"></span></div>
+    <div class="status">
+      <span id="dot" class="dot"></span>
+      <span id="st">Conectando…</span>
+      <span id="mode" class="hint"></span>
+    </div>
   </div>
 
-  <!-- Input oculto para captura por teclado/lector -->
   <input id="scanInput" autocomplete="off" autocapitalize="off" spellcheck="false"
          style="opacity:0; position:absolute; left:-1000px; top:-1000px;" />
 
@@ -146,10 +151,10 @@
               <th>Hora</th>
               <th>Bonchador</th>
               <th>Nombre</th>
-              <th>SEQ</th>
               <th>Tallos</th>
               <th>Variedad</th>
               <th>Grado</th>
+              <th>Lámina</th>
             </tr>
           </thead>
           <tbody id="tb"></tbody>
@@ -163,36 +168,39 @@
         <span class="pill mono" id="capState">CAPTURA: INACTIVA</span>
       </div>
 
-      <!-- BLOQUE ESCANEO (incluye Serial) -->
       <div class="scanBox">
         <div class="split">
           <div class="pill">Escaneo</div>
-          <button id="btnFocus" class="ghost">Activar captura (F9)</button>
+          <button id="btnFocus" class="ghost" type="button">Activar captura (F9)</button>
         </div>
 
         <div class="hint" style="margin-top:8px;">
           Bonchador pendiente: <span id="lastWorkerForV" class="mono warnTxt">—</span><br>
-          Código V pendiente: <span id="lastVPending" class="mono warnTxt">—</span><br><br>
+          Código V pendiente: <span id="lastVPending" class="mono warnTxt">—</span><br>
+          Lámina pendiente: <span id="lastLPending" class="mono warnTxt">—</span><br><br>
 
-          Código 1 (bonchador + tallos): <span class="mono">B16-T20</span> (B16 a B25, tallos 1–999)<br>
+          Código 1 (bonchador + tallos): <span class="mono">B16-T20</span><br>
           Código 2 (variedad + grado): <span class="mono">V01-60</span><br>
-          • V01 = variedad<br>
-          • 60 = grado<br>
-          • Los <b>tallos van en el bonchador</b><br><br>
-          Se puede escanear en cualquier orden (B→V o V→B).
+          Código 3 (lámina): <span class="mono">L1</span><br><br>
+
+          • <b>B16-T20</b> = bonchador B16 con 20 tallos<br>
+          • <b>V01-60</b> = variedad V01 con grado 60<br>
+          • <b>L1</b> = lámina 1<br><br>
+
+          El sistema enviará el registro cuando tenga los 3 escaneos completos.
+          Se puede escanear en cualquier orden.
         </div>
 
         <label style="margin-top:10px;">Entrada manual (teclado)</label>
-        <input id="manualScan" class="mono" placeholder="Ej: B16-T20  ó  V01-60  (Enter)" />
+        <input id="manualScan" class="mono" placeholder="Ej: B16-T20  ó  V01-60  ó  L1  (Enter)" />
 
         <div class="split" style="margin-top:8px; gap:8px;">
           <div class="hint">Último envío: <span id="lastScan" class="mono warnTxt">—</span></div>
         </div>
 
-        <!-- NUEVO: estado/botón Web Serial -->
         <div class="split" style="margin-top:8px; gap:8px;">
           <span class="pill mono" id="serialState">SERIAL: DESCONECTADO</span>
-          <button id="btnSerial" class="ghost" title="Conectar lector USB que expone puerto serial (COM)">
+          <button id="btnSerial" class="ghost" type="button" title="Conectar lector USB que expone puerto serial (COM)">
             Conectar lector USB (Serial)
           </button>
         </div>
@@ -200,13 +208,13 @@
 
       <label style="margin-top:12px;">Nombres de bonchadores</label>
       <div id="namesBox" style="display:grid;grid-template-columns:1fr;gap:8px;"></div>
-      <button id="btnSaveNames" class="ghost" style="margin-top:8px;">Guardar nombres</button>
+      <button id="btnSaveNames" class="ghost" type="button" style="margin-top:8px;">Guardar nombres</button>
 
       <label style="margin-top:12px;">Pendientes por bonchador</label>
       <div class="hint mono" id="pendingBox"
            style="padding:10px;border:1px solid var(--line);border-radius:12px;background:rgba(10,18,32,.25);white-space:pre-wrap">—</div>
 
-      <button id="btnRefresh" class="ghost" style="margin-top:10px;">Refrescar</button>
+      <button id="btnRefresh" class="ghost" type="button" style="margin-top:10px;">Refrescar</button>
       <div class="hint" style="margin-top:8px;">Teclas: F9 activa captura.</div>
     </div>
   </div>
@@ -215,8 +223,9 @@
 <script>
 (() => {
   const API = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
-              ? "http://127.0.0.1:3000"
-              : "https://puntabandap2-production.up.railway.app";
+    ? "http://127.0.0.1:3000"
+    : "https://puntabandap2-production.up.railway.app";
+
   const $ = (id) => document.getElementById(id);
 
   const dot = $("dot"), st = $("st"), mode = $("mode");
@@ -245,8 +254,8 @@
 
   const lastWorkerEl = $("lastWorkerForV");
   const lastVEl = $("lastVPending");
+  const lastLEl = $("lastLPending");
 
-  // NUEVO: referencias Web Serial
   const btnSerial = $("btnSerial");
   const serialState = $("serialState");
 
@@ -258,9 +267,9 @@
   let pendingAll = {};
   let es = null;
 
-  // Pendientes para “cualquier orden”
-  let pendingWorker = null; // { raw:'B16-T20', code:'B16', tallos:20 }
-  let pendingV = null;      // { raw:'V01-60', variedad:'V01', grado:60 }
+  let pendingWorker = null; // { raw, code, tallos }
+  let pendingV = null;      // { raw, variedad, grado }
+  let pendingL = null;      // { raw, id }
 
   const palette = ["#f3ff05","#16A34A","#F97316","#DC2626","#fc9df8","#a8e5f7","#EAB308","#059e8d","#6b8a7f","#18fa0c"];
   const workerColors = {};
@@ -283,15 +292,16 @@
     scanInput.focus({preventScroll:true});
   }
 
-  // ====== UTILIDADES TIEMPO / FILTROS ======
   function fmtTime(ts) {
     const d = new Date(ts);
     if (isNaN(d)) return ts || "";
     return d.toLocaleTimeString("es-CO",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
   }
+
   function sameDay(a, b) {
     return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
   }
+
   function windowFilter(ts){
     const now = new Date();
     const d = new Date(ts);
@@ -354,7 +364,6 @@
     }
   }
 
-  // -------- Canvas / chart helpers --------
   let ctx = null;
   let cssW = 0, cssH = 0;
   let resizeObserver = null;
@@ -411,12 +420,10 @@
     return niceMult * base;
   }
 
-  // ===== Ejes y ticks =====
   function drawAxisY(ctx, padL, padR, padT, padB, W, H, niceMax, ticks = 5, label = "Ramos") {
     const baseY = H - padB;
     const usableH = H - padT - padB - 35;
 
-    // Eje Y (vertical)
     ctx.strokeStyle = "rgba(147,197,253,.55)";
     ctx.lineWidth = 1.2;
     ctx.beginPath();
@@ -424,7 +431,6 @@
     ctx.lineTo(padL, padT + 10);
     ctx.stroke();
 
-    // Ticks + números
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
@@ -436,17 +442,14 @@
       const v = i * step;
       const y = baseY - (v / niceMax) * usableH;
 
-      // Tick corto sobre el eje
       ctx.beginPath();
       ctx.moveTo(padL - 5, Math.round(y) + 0.5);
-      ctx.lineTo(padL,     Math.round(y) + 0.5);
+      ctx.lineTo(padL, Math.round(y) + 0.5);
       ctx.stroke();
 
-      // Etiqueta numérica
       ctx.fillText(String(Math.round(v)), padL - 8, y);
     }
 
-    // Rótulo del eje Y (vertical)
     ctx.save();
     ctx.translate(padL - 32, padT + (usableH / 2));
     ctx.rotate(-Math.PI / 2);
@@ -455,7 +458,6 @@
     ctx.fillText(label, 0, 0);
     ctx.restore();
 
-    // Línea del eje X (base) reforzada
     ctx.strokeStyle = "rgba(147,197,253,.55)";
     ctx.lineWidth = 1.2;
     ctx.beginPath();
@@ -464,89 +466,66 @@
     ctx.stroke();
   }
 
-  function drawAxisX(
-  ctx, padL, padR, padT, padB, W, H,
-  displayWorkers, workerNameMap,
-  groupW,
-  label = "" // si no quieres rótulo, déjalo vacío
-) {
-  const baseY = H - padB;
+  function drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, groupW, label = "") {
+    const baseY = H - padB;
 
-  // Estilo texto
-  ctx.textAlign = "right";
-  ctx.textBaseline = "top";
-  ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-
-  for (let i = 0; i < displayWorkers.length; i++) {
-    const w = displayWorkers[i];
-    const cx = padL + (i + 0.5) * groupW; // centro de la barra
-
-    // Tick corto
-    ctx.strokeStyle = "rgba(147,197,253,.35)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(cx, baseY);
-    ctx.lineTo(cx, baseY + 6);
-    ctx.stroke();
-
-    // === Etiqueta "solo nombre o código" ===
-    const name = (workerNameMap[w] || "").trim();
-    const show = name && name.toUpperCase() !== w ? name : w; // si nombre existe y es distinto al código → nombre; si no → código
-
-    // ----- OPCIÓN A: rotada 45° (como ahora) -----
-    ctx.save();
-    ctx.translate(cx, baseY + 8);
-    ctx.rotate(0); // horizontal
-    ctx.textAlign = "center";
+    ctx.textAlign = "right";
     ctx.textBaseline = "top";
-    ctx.fillStyle = "rgba(214,230,255,.9)";
-    ctx.fillText(show, 0, 0);
-    ctx.restore();
+    ctx.font = "600 11px system-ui, -apple-system, Segoe UI, Roboto, Arial";
 
+    for (let i = 0; i < displayWorkers.length; i++) {
+      const w = displayWorkers[i];
+      const cx = padL + (i + 0.5) * groupW;
 
-    // ----- OPCIÓN B (alternativa): horizontal centrada -----
-    // Descomenta estas 4 líneas y comenta el bloque de "OPCIÓN A" si prefieres horizontal:
-    // ctx.save();
-    // ctx.textAlign = "center";
-    // ctx.fillStyle = "rgba(214,230,255,.9)";
-    // ctx.fillText(show, cx, baseY + 8);
-    // ctx.restore();
+      ctx.strokeStyle = "rgba(147,197,253,.35)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, baseY);
+      ctx.lineTo(cx, baseY + 6);
+      ctx.stroke();
+
+      const name = (workerNameMap[w] || "").trim();
+      const show = name && name.toUpperCase() !== w ? name : w;
+
+      ctx.save();
+      ctx.translate(cx, baseY + 8);
+      ctx.rotate(0);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillStyle = "rgba(214,230,255,.9)";
+      ctx.fillText(show, 0, 0);
+      ctx.restore();
+    }
+
+    if (label) {
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.font = "700 12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      ctx.fillStyle = "rgba(214,230,255,.85)";
+      ctx.fillText(label, padL + (W - padL - padR) / 2, H - 8);
+      ctx.restore();
+    }
   }
-
-  // Rótulo del eje X (si quieres quitarlo, deja label = "")
-  if (label) {
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "bottom";
-    ctx.font = "700 12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-    ctx.fillStyle = "rgba(214,230,255,.85)";
-    ctx.fillText(label, padL + (W - padL - padR) / 2, H - 8);
-    ctx.restore();
-  }
-}
-
 
   function drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, maxV){
-  const baseY = H - padB;
-  const usableH = H - padT - padB - 35;
+    const baseY = H - padB;
+    const usableH = H - padT - padB - 35;
+    const niceMax = computeNiceMax(maxV);
+    const ticks = 5;
+    const step = niceMax / ticks;
 
-  const niceMax = computeNiceMax(maxV);
-  const ticks = 5;
-  const step = niceMax / ticks;
-
-  // Líneas horizontales suaves (grilla)
-  for (let i = 1; i <= ticks; i++) {
-    const v = i * step;
-    const y = baseY - (v / niceMax) * usableH;
-    ctx.strokeStyle = "rgba(31,51,88,.45)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(padL, crisp(y));
-    ctx.lineTo(W - padR, crisp(y));
-    ctx.stroke();
+    for (let i = 1; i <= ticks; i++) {
+      const v = i * step;
+      const y = baseY - (v / niceMax) * usableH;
+      ctx.strokeStyle = "rgba(31,51,88,.45)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, crisp(y));
+      ctx.lineTo(W - padR, crisp(y));
+      ctx.stroke();
+    }
   }
-  // No dibujamos números ni línea base aquí.
-}
 
   function getGradient(ctx, x, y, w, h, hex){
     const g = ctx.createLinearGradient(0, y, 0, y+h);
@@ -568,13 +547,12 @@
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
-    const values     = displayWorkers.map(w => counts[w] || 0);
-    const stemValues = displayWorkers.map(w => stems[w]  || 0);
+    const values = displayWorkers.map(w => counts[w] || 0);
+    const stemValues = displayWorkers.map(w => stems[w] || 0);
 
     const rawMax = Math.max(1, ...values);
     const niceMax = computeNiceMax(rawMax);
 
-    // Paddings (padB ↑ para etiquetas del eje X)
     const padL = 44, padR = 24, padT = 36, padB = 60;
     const baseY = H - padB;
     const usableW = W - padL - padR;
@@ -590,9 +568,9 @@
 
     const totalR = values.reduce((a, b) => a + b, 0);
     const totalT = stemValues.reduce((a, b) => a + b, 0);
-    const hrs  = hoursInWindow();
+    const hrs = hoursInWindow();
     kpiText.textContent = `${totalR} ramos | ${totalT} tallos`;
-    kpiSub.textContent  = `Promedio: ${(totalR/hrs).toFixed(1)} ramos/h | ${(totalT/hrs).toFixed(1)} tallos/h`;
+    kpiSub.textContent = `Promedio: ${(totalR/hrs).toFixed(1)} ramos/h | ${(totalT/hrs).toFixed(1)} tallos/h`;
 
     if (displayWorkers.length === 0) {
       ctx.fillStyle = "rgba(200,220,255,0.85)";
@@ -602,18 +580,14 @@
       return;
     }
 
-    // Grilla base (opcional)
     drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, niceMax);
-
-    // === NUEVO: ejes Y y X ===
     drawAxisY(ctx, padL, padR, padT, padB, W, H, niceMax, 5, "Ramos");
 
     const groupW = usableW / Math.max(1, displayWorkers.length);
-    const barW   = Math.max(22, Math.min(62, groupW - 14));
+    const barW = Math.max(22, Math.min(62, groupW - 14));
     drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, groupW, "");
 
     const radius = Math.min(10, barW/2);
-
     const targetHeights = values.map(v => (v / niceMax) * Math.max(0, usableH));
 
     if (!animState.running || animState.to.length !== targetHeights.length){
@@ -639,7 +613,6 @@
         const w = displayWorkers[i];
         const r = values[i];
         const t = stemValues[i];
-        const name = (workerNameMap[w] || w).toUpperCase();
 
         const x = padL + (i + 0.5) * groupW - barW / 2;
         const hTarget = (animState.from[i] + (animState.to[i] - animState.from[i]) * progress);
@@ -676,7 +649,6 @@
           ctx.fillText(line2, cx, y + (h/2) + 12);
         }
 
-
         barRects.push({x, y, w: barW, h, worker: w, ramos: r, tallos: t, cx});
       }
     }
@@ -702,7 +674,6 @@
       ctx.textAlign = "left";
       ctx.fillText(`Rendimiento por bonchador (${winLabel})${onlyActive ? " — Solo activos" : ""}`, padL, padT);
 
-      // Redibuja grilla + ejes para el frame
       drawGridAndAxis(ctx, padL, padR, padT, padB, W, H, niceMax);
       drawAxisY(ctx, padL, padR, padT, padB, W, H, niceMax, 5, "Ramos");
       drawAxisX(ctx, padL, padR, padT, padB, W, H, displayWorkers, workerNameMap, (W - padL - padR)/Math.max(1, displayWorkers.length), "Bonchadores");
@@ -724,6 +695,7 @@
     chartTip.style.top = `${y}px`;
     chartTip.classList.add("show");
   }
+
   function hideTip(){
     chartTip.classList.remove("show");
   }
@@ -752,10 +724,6 @@
   });
   chart.addEventListener('mouseleave', hideTip);
 
-  /* ==================================================
-     BREAKDOWN POR VARIEDAD PARA CADA TARJETA
-     ================================================== */
-
   function scansInWindow() { return scans.filter(r => windowFilter(r.ts)); }
 
   function breakdownByWorker() {
@@ -775,7 +743,7 @@
       itW.totalRamos += 1;
       itW.totalTallos += tallos;
 
-      const key = varNombre; // usar `${varNombre} · ${grado}` si quieres por grado
+      const key = varNombre;
       if (!itW.variedades[key]) itW.variedades[key] = { nombre: varNombre, ramos: 0, tallos: 0, grados: {} };
       const itV = itW.variedades[key];
       itV.ramos += 1;
@@ -815,23 +783,12 @@
       const rest = varArr.slice(topN);
 
       const makeVarietyRow = (v) => {
-        const grados = Object.entries(v.grados || {});
-        const gradosSorted = grados.sort((a,b)=> (b[1].ramos||0) - (a[1].ramos||0));
-        const gradosHtml = gradosSorted.map(([g, gvals]) =>
-          `<div class="subPill" title="Grado ${g}">
-             <b>${gvals.ramos}</b> r · <b>${gvals.tallos}</b> t (gr ${g})
-           </div>`
-        ).join("");
-
         return `
           <div class="subRow" style="margin-top:6px;">
             <span class="subPill"><b>${v.nombre}</b></span>
             <span class="subPill"><b>${v.ramos}</b> ramos</span>
             <span class="subPill"><b>${v.tallos}</b> tallos</span>
           </div>
-          <!-- Si quieres mostrar grados por defecto, quita este comentario:
-          <div class="subRow" style="margin-top:4px;">${gradosHtml}</div>
-          -->
         `;
       };
 
@@ -844,7 +801,7 @@
             <div id="${detailsId}" style="display:none;">
               ${rest.map(makeVarietyRow).join("")}
             </div>
-            <button class="ghost" style="margin-top:6px;" onclick="
+            <button class="ghost" type="button" style="margin-top:6px;" onclick="
               (function(){
                 const el=document.getElementById('${detailsId}');
                 const btn=this;
@@ -908,31 +865,9 @@
     }
   }
 
-  
-async function saveNames() {
-  const inputs = namesBox.querySelectorAll("input[data-worker]");
-  let successCount = 0;
-
-  for (const inp of inputs) {
-    const code = inp.dataset.worker;
-    const name = (inp.value || "").trim();
-    if (!name) continue;
-
-    try {
-      const res = await fetch(`${API}/api/workers`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, name })
-      });
-      if (res.ok) successCount++;
-    } catch {}
-  }
-
-  // Sin alertas. Si hubo cambios, refrescamos datos para que se vea reflejado.
-  if (successCount > 0) {
-    await loadWorkers();
-    await refreshAll();
-  }
+  async function saveNames() {
+    const inputs = namesBox.querySelectorAll("input[data-worker]");
+    let successCount = 0;
 
     for (const inp of inputs) {
       const code = inp.dataset.worker;
@@ -948,6 +883,11 @@ async function saveNames() {
         if (res.ok) successCount++;
       } catch {}
     }
+
+    if (successCount > 0) {
+      await loadWorkers();
+      await refreshAll();
+    }
   }
 
   function renderTable() {
@@ -959,10 +899,10 @@ async function saveNames() {
         <td class="mono">${fmtTime(r.ts)}</td>
         <td><span class="pill">${r.worker || ""}</span></td>
         <td>${name}</td>
-        <td class="mono">${r.seq || ""}</td>
         <td>${r.tallos ?? ""}</td>
-        <td><span class="pill mono">${r.variedad_nombre ?? "—"}</span></td>
+        <td><span class="pill mono">${r.variedad_nombre ?? r.variedad_id ?? "—"}</span></td>
         <td>${r.grado_cm || ""}</td>
+        <td><span class="pill mono">${r.lamina_nombre ?? r.lamina_id ?? "—"}</span></td>
       `;
       tb.appendChild(tr);
     }
@@ -1012,7 +952,6 @@ async function saveNames() {
     renderAll();
   }
 
-  // ============== PARSERS: Bxx-Tyy y Vxx-gg ==============
   function parseBonchador(code) {
     const up = String(code||"").trim().toUpperCase();
     const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
@@ -1023,20 +962,32 @@ async function saveNames() {
     if (!Number.isFinite(t) || t <= 0) return null;
     return { raw: up, code: "B" + n, tallos: t };
   }
+
   function parseV(code) {
     const up = String(code||"").trim().toUpperCase();
     const m = up.match(/^V(\d{1,2})-(\d{1,3})$/);
     if (!m) return null;
     const variedad = "V" + m[1];
     const grado = parseInt(m[2],10);
-    if (!Number.isFinite(grado)) return null;
+    if (!Number.isFinite(grado) || grado <= 0) return null;
     return { raw: up, variedad, grado };
   }
+
+  function parseL(code) {
+    const up = String(code||"").trim().toUpperCase();
+    const m = up.match(/^L(\d{1,3})$/);
+    if (!m) return null;
+    const n = parseInt(m[1],10);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return { raw: up, id: "L" + n };
+  }
+
   function detectBarcodeType(code) {
     const up = String(code||"").trim().toUpperCase();
     const b = parseBonchador(up);
     const v = parseV(up);
-    return { up, isB: !!b, isV: !!v, b, v };
+    const l = parseL(up);
+    return { up, isB: !!b, isV: !!v, isL: !!l, b, v, l };
   }
 
   function setLastWorkerUI(txt) {
@@ -1044,10 +995,17 @@ async function saveNames() {
     if (txt) { lastWorkerEl.textContent = txt; lastWorkerEl.className = "mono okTxt"; }
     else { lastWorkerEl.textContent = "—"; lastWorkerEl.className = "mono warnTxt"; }
   }
+
   function setLastVUI(txt) {
     if (!lastVEl) return;
     if (txt) { lastVEl.textContent = txt; lastVEl.className = "mono okTxt"; }
     else { lastVEl.textContent = "—"; lastVEl.className = "mono warnTxt"; }
+  }
+
+  function setLastLUI(txt) {
+    if (!lastLEl) return;
+    if (txt) { lastLEl.textContent = txt; lastLEl.className = "mono okTxt"; }
+    else { lastLEl.textContent = "—"; lastLEl.className = "mono warnTxt"; }
   }
 
   async function sendToServer(payload) {
@@ -1061,11 +1019,41 @@ async function saveNames() {
     return { ok: res.ok, data };
   }
 
+  async function trySendCombo() {
+    if (!(pendingWorker && pendingV && pendingL)) return;
+
+    const out = await sendToServer({
+      worker: pendingWorker.raw,
+      barcode: pendingV.raw,
+      lamina: pendingL.raw
+    });
+
+    if (!out.ok) {
+      const msg = out.data?.error || "ERROR";
+      lastScanEl.textContent = `${pendingWorker.raw} / ${pendingV.raw} / ${pendingL.raw} (${msg})`;
+      return;
+    }
+
+    pendingWorker = null;
+    pendingV = null;
+    pendingL = null;
+    setLastWorkerUI(null);
+    setLastVUI(null);
+    setLastLUI(null);
+
+    if (out.data?.reg) {
+      scans.unshift(out.data.reg);
+      renderAll();
+    } else {
+      await refreshAll();
+    }
+  }
+
   async function postScan(rawCode) {
-    const { up, isB, isV, b, v } = detectBarcodeType(rawCode);
+    const { up, isB, isV, isL, b, v, l } = detectBarcodeType(rawCode);
     lastScanEl.textContent = up;
 
-    if (!isB && !isV) {
+    if (!isB && !isV && !isL) {
       lastScanEl.textContent = up + " (NO RECONOCIDO)";
       return;
     }
@@ -1073,47 +1061,24 @@ async function saveNames() {
     if (isB) {
       pendingWorker = b;
       setLastWorkerUI(pendingWorker.raw);
-
-      if (pendingV && pendingWorker) {
-        const out = await sendToServer({
-          worker: pendingWorker.raw,
-          barcode: pendingV.raw
-        });
-        if (!out.ok) { lastScanEl.textContent = pendingWorker.raw + " / " + pendingV.raw + " (ERROR)"; return; }
-
-        pendingV = null;
-        pendingWorker = null;
-        setLastVUI(null);
-        setLastWorkerUI(null);
-
-        await refreshAll();
-      }
+      await trySendCombo();
       return;
     }
 
     if (isV) {
       pendingV = v;
       setLastVUI(pendingV.raw);
-
-      if (pendingWorker && pendingV) {
-        const out = await sendToServer({
-          worker: pendingWorker.raw,
-          barcode: pendingV.raw
-        });
-        if (!out.ok) { lastScanEl.textContent = pendingWorker.raw + " / " + pendingV.raw + " (ERROR)"; return; }
-
-        pendingV = null;
-        pendingWorker = null;
-        setLastVUI(null);
-        setLastWorkerUI(null);
-
-        await refreshAll();
-      }
+      await trySendCombo();
       return;
+    }
+
+    if (isL) {
+      pendingL = l;
+      setLastLUI(pendingL.raw);
+      await trySendCombo();
     }
   }
 
-  // ===== Eventos de entrada (teclado/lector tipo teclado) =====
   manualScan.addEventListener("keydown", async (e) => {
     if (e.key !== "Enter") return;
     const code = (manualScan.value || "").trim();
@@ -1141,7 +1106,6 @@ async function saveNames() {
   activeSel.addEventListener("change", renderAll);
   btnSaveNames.addEventListener("click", saveNames);
 
-  // ===== SSE + fallback polling =====
   let pollTimer = null;
 
   function startPollingFallback() {
@@ -1232,31 +1196,24 @@ async function saveNames() {
     }
   }
 
-  // =======================
-  // CAPTURA "SIEMPRE ACTIVA"
-  // (auto foco + wake lock)
-  // y ARREGLO para NO invadir selects/inputs
-  // =======================
-
-  // --- NUEVO: control de auto-enfoque para no molestar al usuario ---
   const INTERACTIVE_SELECTOR = 'input, select, textarea, [contenteditable="true"], button:not(#btnFocus):not(#btnSerial)';
-  let suspendAutoFocus = false; // si true, no forzamos foco al input oculto
+  let suspendAutoFocus = false;
 
   function focusScanInput() {
-    if (suspendAutoFocus) return;        // no invadir si el usuario edita algo
+    if (suspendAutoFocus) return;
     captureEnabled = true;
-    setCaptureUI?.();
+    setCaptureUI();
     if (scanInput) {
       scanInput.setAttribute("tabindex", "0");
       scanInput.focus({ preventScroll: true });
-      const v = scanInput.value; scanInput.value = ""; scanInput.value = v; // cursor al final
+      const v = scanInput.value; scanInput.value = ""; scanInput.value = v;
     }
   }
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       focusScanInput();
-      requestWakeLock(); // reacquire si se liberó
+      requestWakeLock();
     } else {
       releaseWakeLock();
     }
@@ -1271,14 +1228,12 @@ async function saveNames() {
     if (document.visibilityState === "visible") setTimeout(focusScanInput, 0);
   });
 
-  // Watchdog que ya NO roba foco si estás editando algo
   setInterval(() => {
     if (!suspendAutoFocus && document.visibilityState === "visible" && document.activeElement !== scanInput) {
       focusScanInput();
     }
   }, 1500);
 
-  // Pausa auto-enfoque cuando entras a controles interactivos (excepto el scanInput)
   document.addEventListener("focusin", (e) => {
     const t = e.target;
     if (t && t !== scanInput && t.matches(INTERACTIVE_SELECTOR)) {
@@ -1286,7 +1241,6 @@ async function saveNames() {
     }
   });
 
-  // Reanuda auto-enfoque cuando sales de los controles (y no queda ninguno enfocado)
   document.addEventListener("focusout", (e) => {
     const t = e.target;
     if (t && t.matches(INTERACTIVE_SELECTOR)) {
@@ -1299,19 +1253,18 @@ async function saveNames() {
     }
   }, true);
 
-  // Selects de la barra (hora/día y activos/todos):
   windowSel.addEventListener("mousedown", () => { suspendAutoFocus = true; });
   windowSel.addEventListener("change", () => { suspendAutoFocus = false; renderAll(); focusScanInput(); });
-  windowSel.addEventListener("blur",   () => { suspendAutoFocus = false; focusScanInput(); });
+  windowSel.addEventListener("blur", () => { suspendAutoFocus = false; focusScanInput(); });
 
   activeSel.addEventListener("mousedown", () => { suspendAutoFocus = true; });
   activeSel.addEventListener("change", () => { suspendAutoFocus = false; renderAll(); focusScanInput(); });
-  activeSel.addEventListener("blur",   () => { suspendAutoFocus = false; focusScanInput(); });
+  activeSel.addEventListener("blur", () => { suspendAutoFocus = false; focusScanInput(); });
 
-  // Inputs de nombres (editor):
   namesBox.addEventListener("focusin", (e) => {
     if (e.target && e.target.matches('input[data-worker]')) suspendAutoFocus = true;
   });
+
   namesBox.addEventListener("focusout", (e) => {
     if (e.target && e.target.matches('input[data-worker]')) {
       setTimeout(() => {
@@ -1323,16 +1276,13 @@ async function saveNames() {
     }
   }, true);
 
-  // Botón Guardar nombres → reanuda captura al terminar
   btnSaveNames.addEventListener("click", () => {
     setTimeout(() => { suspendAutoFocus = false; focusScanInput(); }, 200);
   });
 
-  // F9 o botón “Activar captura” → reanuda explícitamente
   btnFocus.addEventListener("click", () => { suspendAutoFocus = false; focusScanInput(); });
   document.addEventListener("keydown", (e) => { if (e.key === "F9") { suspendAutoFocus = false; focusScanInput(); } });
 
-  // Screen Wake Lock API (mantener pantalla encendida) — requiere HTTPS/localhost
   let wakeLock = null;
   async function requestWakeLock() {
     try {
@@ -1344,9 +1294,6 @@ async function saveNames() {
   }
   async function releaseWakeLock() { try { await wakeLock?.release(); } catch{} wakeLock = null; }
 
-  // ===================
-  // WEB SERIAL (OPCIONAL)
-  // ===================
   let serialPort = null;
   let serialReader = null;
   let serialReading = false;
@@ -1415,10 +1362,7 @@ async function saveNames() {
         return;
       }
 
-      const port = await navigator.serial.requestPort({
-        // Si conoces Vendor/Product IDs, agrega filtros:
-        // filters: [{ usbVendorId: 0xXXXX, usbProductId: 0xYYYY }]
-      });
+      const port = await navigator.serial.requestPort({});
       await openSerialPort(port);
     } catch {
       setSerialState("DESCONECTADO");
@@ -1427,9 +1371,7 @@ async function saveNames() {
 
   btnSerial?.addEventListener("click", connectSerial);
 
-  // ========= Arranque =========
   (async () => {
-    // Activar captura y WakeLock en cuanto carga
     window.addEventListener("load", () => {
       focusScanInput();
       requestWakeLock();
@@ -1446,7 +1388,6 @@ async function saveNames() {
       setStatus(false, "Sin API", "Inicia node server.js en 127.0.0.1:3000");
     }
 
-    // Intento de reconexión automática a puertos serial previamente autorizados
     if ("serial" in navigator) {
       try {
         const ports = await navigator.serial.getPorts();
