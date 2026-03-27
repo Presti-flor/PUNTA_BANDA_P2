@@ -110,7 +110,7 @@
     <div class="card right card-rendimiento">
     <div class="split">
   <div class="pill">Rendimiento por bonchador</div>
-  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;width:100%;">
+  <div class="row2" style="width:420px;max-width:40%;">
     <select id="windowSel">
       <option value="hour">Última hora</option>
       <option value="today">Total hoy</option>
@@ -120,16 +120,6 @@
       <option value="active">Solo activos</option>
       <option value="all">Todos</option>
     </select>
-
-    <select id="laminaFilter">
-      <option value="">Todas las láminas</option>
-    </select>
-
-    <select id="variedadFilter">
-      <option value="">Todas las variedades</option>
-    </select>
-
-    <input id="tallosMinFilter" type="number" min="0" placeholder="Tallos mín." />
   </div>
 </div>
 
@@ -153,18 +143,7 @@
       <div class="split" style="margin-top:12px;">
   <div class="pill">Resumen por lámina</div>
 </div>
-<div class="scroll" style="margin-top:8px;">
-  <table>
-    <thead>
-      <tr>
-        <th>Lámina</th>
-        <th>Registros</th>
-        <th>Tallos</th>
-      </tr>
-    </thead>
-    <tbody id="tbLamina"></tbody>
-  </table>
-</div>
+<div id="laminaCards" class="kpiGrid" style="margin-top:10px;"></div>
 
 <div class="split" style="margin-top:12px;">
   <div class="pill">Resumen por variedad</div>
@@ -279,9 +258,7 @@
   const lastScanEl = $("lastScan");
   const pendingBox = $("pendingBox");
   const btnRefresh = $("btnRefresh");
-  const laminaFilter = $("laminaFilter");
-const variedadFilter = $("variedadFilter");
-const tallosMinFilter = $("tallosMinFilter");
+  const laminaCards = $("laminaCards");
 
 const tbLamina = $("tbLamina");
 const tbVariedad = $("tbVariedad");
@@ -362,9 +339,8 @@ const tbVariedad = $("tbVariedad");
     return sameDay(d, now);
   }
   function getFilteredScans() {
-  const laminaVal = String(laminaFilter?.value || "").trim().toUpperCase();
-  const variedadVal = String(variedadFilter?.value || "").trim().toUpperCase();
-  const tallosMin = Number(tallosMinFilter?.value || 0);
+  return scans.filter(r => windowFilter(r.ts));
+
 
   return scans.filter(r => {
     if (!windowFilter(r.ts)) return false;
@@ -600,7 +576,7 @@ const tbVariedad = $("tbVariedad");
     return g;
   }
 
-  function drawWorkerChart(displayWorkers, counts, stems) {
+  function drawWorkerChart(displayWorkers, counts, stems, noAnimation = false) {
     if (!ctx) return;
     setupHiDPICanvas();
 
@@ -657,19 +633,19 @@ const tbVariedad = $("tbVariedad");
     const targetHeights = values.map(v => (v / niceMax) * Math.max(0, usableH));
 
     if (!animState.running || animState.to.length !== targetHeights.length){
-      animState.from = targetHeights.map(() => 0);
-      animState.to = targetHeights.slice();
-      animState.start = performance.now();
-      animState.running = true;
-      requestAnimationFrame(loop);
-    } else {
-      animState.to = targetHeights.slice();
-      if (!animState.running) {
-        animState.start = performance.now();
-        animState.running = true;
-        requestAnimationFrame(loop);
-      }
-    }
+  animState.from = targetHeights.map(() => 0);
+  animState.to = targetHeights.slice();
+  animState.start = performance.now();
+  animState.running = true;
+  requestAnimationFrame(loop);
+} else {
+  animState.to = targetHeights.slice();
+  if (!animState.running) {
+    animState.start = performance.now();
+    animState.running = true;
+    requestAnimationFrame(loop);
+  }
+}
 
     function renderAt(progress){
       barRects = [];
@@ -686,11 +662,9 @@ const tbVariedad = $("tbVariedad");
         const y = baseY - h;
 
         const hex = (workerColors[w] || "#3B82F6");
-        const grad = getGradient(ctx, x, y, barW, h, hex);
-
-        ctx.fillStyle = grad;
-        roundRectPath(ctx, x, y, barW, h, radius);
-        ctx.fill();
+        ctx.fillStyle = hex;
+roundRectPath(ctx, x, y, barW, h, radius);
+ctx.fill();
 
         ctx.strokeStyle = "rgba(0,0,0,.25)";
         ctx.lineWidth = 1;
@@ -1009,28 +983,80 @@ const tbVariedad = $("tbVariedad");
   countInfo.textContent = `${getFilteredScans().length} registros filtrados`;
 }
 
-  function renderSummaryByLamina() {
+function renderSummaryByLamina() {
   const rows = getFilteredScans();
   const map = {};
 
   for (const r of rows) {
-    const key = String(r.lamina_nombre || r.lamina_id || "—").trim();
-    if (!map[key]) map[key] = { registros: 0, tallos: 0 };
-    map[key].registros += 1;
-    map[key].tallos += Number(r.tallos || 0);
+    const laminaKey = String(r.lamina_nombre || r.lamina_id || "SIN LÁMINA").trim();
+    const variedadKey = String(r.variedad_nombre || r.variedad_id || "—").trim();
+    const tallos = Number(r.tallos || 0);
+
+    if (!map[laminaKey]) {
+      map[laminaKey] = {
+        registros: 0,
+        tallos: 0,
+        variedades: {}
+      };
+    }
+
+    map[laminaKey].registros += 1;
+    map[laminaKey].tallos += tallos;
+
+    if (!map[laminaKey].variedades[variedadKey]) {
+      map[laminaKey].variedades[variedadKey] = {
+        ramos: 0,
+        tallos: 0
+      };
+    }
+
+    map[laminaKey].variedades[variedadKey].ramos += 1;
+    map[laminaKey].variedades[variedadKey].tallos += tallos;
   }
 
   const sorted = Object.entries(map).sort((a, b) => b[1].registros - a[1].registros);
 
-  tbLamina.innerHTML = sorted.map(([lamina, vals]) => `
-    <tr>
-      <td><span class="pill mono">${lamina}</span></td>
-      <td>${vals.registros}</td>
-      <td>${vals.tallos}</td>
-    </tr>
-  `).join("") || `
-    <tr><td colspan="3" class="hint">Sin datos</td></tr>
-  `;
+  laminaCards.innerHTML = "";
+
+  if (!sorted.length) {
+    laminaCards.innerHTML = `<div class="hint">Sin datos por lámina</div>`;
+    return;
+  }
+
+  for (const [lamina, vals] of sorted) {
+    const variedades = Object.entries(vals.variedades)
+      .sort((a, b) => b[1].ramos - a[1].ramos)
+      .map(([nombre, v]) => `
+        <div class="subRow" style="margin-top:6px;">
+          <span class="subPill"><b>${nombre}</b></span>
+          <span class="subPill"><b>${v.ramos}</b> ramos</span>
+          <span class="subPill"><b>${v.tallos}</b> tallos</span>
+        </div>
+      `)
+      .join("");
+
+    const div = document.createElement("div");
+    div.className = "kpiCard active";
+    div.innerHTML = `
+      <div class="t">
+        <div class="name" style="font-size:20px;">${lamina}</div>
+        <div class="pill">Lámina</div>
+      </div>
+
+      <div class="bigNum" style="font-size:42px;">${vals.registros}</div>
+      <div class="bigLab" style="font-size:14px;">ramos totales</div>
+
+      <div class="subRow" style="margin-top:12px;">
+        <span class="subPill" style="font-size:14px;"><b>${vals.tallos}</b> tallos totales</span>
+      </div>
+
+      <div style="margin-top:12px;border-top:1px dashed rgba(31,51,88,.6);padding-top:10px;">
+        <div class="hint" style="font-size:13px;margin-bottom:6px;">Variedades trabajadas en esta lámina</div>
+        ${variedades || `<div class="hint">Sin variedades</div>`}
+      </div>
+    `;
+    laminaCards.appendChild(div);
+  }
 }
 
 function renderSummaryByVariedad() {
@@ -1057,9 +1083,7 @@ function renderSummaryByVariedad() {
   `;
 }
 
-  function renderAll() {
-  populateFilterOptions();
-
+function renderAll() {
   const counts = countsByWorker();
   const stems  = stemsByWorkerFiltered();
 
@@ -1071,7 +1095,6 @@ function renderSummaryByVariedad() {
   drawWorkerChart(graphWorkers, counts, stems);
   renderWorkerCards(displayWorkers, counts, stems);
   renderSummaryByLamina();
-  renderSummaryByVariedad();
   renderTable();
 }
 
@@ -1096,7 +1119,7 @@ function renderSummaryByVariedad() {
   async function refreshAll() {
     const [pRes, sRes] = await Promise.all([
       fetch(API + "/api/pendingAll", {cache:"no-store"}).catch(()=>null),
-      fetch(API + "/api/scans?limit=2000", {cache:"no-store"}).catch(()=>null)
+      fetch(API + "/api/scans?limit=500", {cache:"no-store"})
     ]);
 
     if (pRes && pRes.ok) pendingAll = await pRes.json();
@@ -1257,9 +1280,6 @@ function renderSummaryByVariedad() {
   windowSel.addEventListener("change", renderAll);
   activeSel.addEventListener("change", renderAll);
   btnSaveNames.addEventListener("click", saveNames);
-  laminaFilter.addEventListener("change", renderAll);
-variedadFilter.addEventListener("change", renderAll);
-tallosMinFilter.addEventListener("input", renderAll);
 
   let pollTimer = null;
 
@@ -1312,10 +1332,11 @@ tallosMinFilter.addEventListener("input", renderAll);
         }
 
         if (msg.kind === "scan" && msg.reg) {
-          scans.unshift(msg.reg);
-          renderAll();
-          return;
-        }
+  scans.unshift(msg.reg);
+  if (scans.length > 500) scans = scans.slice(0, 500);
+  renderFast();
+  return;
+}
       } catch {}
     };
 
@@ -1324,6 +1345,21 @@ tallosMinFilter.addEventListener("input", renderAll);
       startPollingFallback();
     };
   }
+
+  function renderFast() {
+  const counts = countsByWorker();
+  const stems  = stemsByWorkerFiltered();
+
+  const displayWorkers = getDisplayWorkers(counts);
+  const graphWorkers = (activeSel.value === "active") ? getActiveWorkers(counts) : displayWorkers;
+
+  renderPendingBox();
+  buildLegend(displayWorkers);
+  drawWorkerChart(graphWorkers, counts, stems, true);
+  renderWorkerCards(displayWorkers, counts, stems);
+  renderSummaryByLamina();
+  renderTable();
+}
 
   function installResizeObservers() {
     if ('ResizeObserver' in window) {
