@@ -1099,17 +1099,36 @@ function renderSummaryByLamina() {
 }
 
 function renderSummaryByVariedad() {
+  if (!tbVariedad) return;
+
   const rows = getFilteredScans();
   const map = {};
 
   for (const r of rows) {
-    const key = String(r.variedad_nombre || r.variedad_id || "—").trim();
-    if (!map[key]) map[key] = { registros: 0, tallos: 0 };
+    const key = String(r.variedad_nombre || r.variedad_id || "").trim();
+    if (!key) continue;
+
+    if (!map[key]) {
+      map[key] = {
+        registros: 0,
+        tallos: 0
+      };
+    }
+
     map[key].registros += 1;
     map[key].tallos += Number(r.tallos || 0);
   }
 
   const sorted = Object.entries(map).sort((a, b) => b[1].registros - a[1].registros);
+
+  if (!sorted.length) {
+    tbVariedad.innerHTML = `
+      <tr>
+        <td colspan="3" class="hint">Sin datos de variedades</td>
+      </tr>
+    `;
+    return;
+  }
 
   tbVariedad.innerHTML = sorted.map(([variedad, vals]) => `
     <tr>
@@ -1117,9 +1136,7 @@ function renderSummaryByVariedad() {
       <td>${vals.registros}</td>
       <td>${vals.tallos}</td>
     </tr>
-  `).join("") || `
-    <tr><td colspan="3" class="hint">Sin datos</td></tr>
-  `;
+  `).join("");
 }
 
 function renderAll() {
@@ -1134,6 +1151,7 @@ function renderAll() {
   drawWorkerChart(graphWorkers, counts, stems);
   renderWorkerCards(displayWorkers, counts, stems);
   renderSummaryByLamina();
+  renderSummaryByVariedad();
   renderTable();
 }
 
