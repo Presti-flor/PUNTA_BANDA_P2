@@ -39,8 +39,8 @@ const pool = new Pool({
 // -----------------------------
 // Configuración y estado
 // -----------------------------
-const WORKER_MIN = 16;
-const WORKER_MAX = 25;
+const WORKER_MIN = 1;
+const WORKER_MAX = 12;
 
 // Mapa en memoria de nombres de bonchadores (p.ej. { B16: "Juan" })
 let workerNameMap = {};
@@ -131,7 +131,7 @@ app.get("/api/pendingAll", (req, res) => {
 // Bonchador: B16-T20
 function parseWorker(code) {
   const up = String(code || "").trim().toUpperCase();
-  const m = up.match(/^B(\d{2})-T(\d{1,3})$/);
+  const m = up.match(/^B(\d{1,2})-T(\d{1,3})$/);
   if (!m) return null;
 
   const n = parseInt(m[1], 10);
@@ -141,7 +141,7 @@ function parseWorker(code) {
   if (!Number.isFinite(tallos) || tallos <= 0) return null;
 
   return {
-    code: `B${n}`,
+    code: `B${String(n).padStart(2, "0")}`, // B01, B02... B12
     tallos,
     raw: up,
   };
