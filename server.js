@@ -63,7 +63,7 @@ app.get("/", (req, res) => {
 app.get("/api/workers", (req, res) => {
   const workers = [];
   for (let i = WORKER_MIN; i <= WORKER_MAX; i++) {
-    const code = `B${i}`;
+    const code = `B${String(i).padStart(2, "0")}`;
     workers.push({ code, name: workerNameMap[code] || code });
   }
   res.json(workers);
